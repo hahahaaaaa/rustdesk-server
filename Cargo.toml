@@ -54,8 +54,7 @@ dns-lookup = "1.0.8"
 ping = "0.4.0"
 flate2 = "1.0"
 # hbb_common pulls native-tls unconditionally; the musl cross images ship no
-# OpenSSL, so compile it from source for the target. The host-side build script
-# dependency uses the system libssl installed by Cross.toml.
+# OpenSSL, so compile it from source for the target.
 native-tls = { version = "0.2", features = ["vendored"] }
 
 [target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
@@ -64,9 +63,6 @@ reqwest = { git = "https://github.com/rustdesk-org/reqwest", features = ["blocki
 
 [target.'cfg(not(any(target_os = "macos", target_os = "windows")))'.dependencies]
 reqwest = { git = "https://github.com/rustdesk-org/reqwest", features = ["blocking", "socks", "json", "rustls-tls", "rustls-tls-native-roots", "gzip"], default-features=false }
-
-[build-dependencies]
-hbb_common = { path = "libs/hbb_common" }
 
 [workspace]
 members = ["libs/hbb_common"]
