@@ -2,7 +2,7 @@ import { parse } from 'protobufjs'
 import messageSource from './proto/message.proto?raw'
 import rendezvousSource from './proto/rendezvous.proto?raw'
 
-const root = parse(messageSource, { keepCase: true })
+const { root } = parse(messageSource, { keepCase: true })
 parse(rendezvousSource, root, { keepCase: true })
 
 export const Message = root.lookupType('hbb.Message')
