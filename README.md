@@ -79,10 +79,10 @@ to GitHub Container Registry as `ghcr.io/hahahaaaaa/rustdesk-server:latest`
 docker compose up -d
 ```
 
-If the package is private, run `docker login ghcr.io` first (use a GitHub
-personal access token with `read:packages`). Packages are private by default
-even when the repository is public; set the package visibility to public in
-the repository's package settings if anonymous pulls are needed.
+The package is public, so `docker compose up -d` pulls it anonymously. If you
+switch the package to private in its GitHub package settings, run
+`docker login ghcr.io` first with a personal access token that has
+`read:packages`.
 
 Open `http://<server>:21114/` to sign in. Set `API_ADMIN_PASSWORD` (and
 optionally `API_ADMIN_USERNAME`) on the first start; if the password is omitted,
