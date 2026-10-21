@@ -6,6 +6,7 @@ mod db;
 mod error;
 mod models;
 mod routes;
+mod totp;
 
 use std::sync::Arc;
 

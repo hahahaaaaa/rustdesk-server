@@ -1,24 +1,19 @@
 <script setup>
-import { computed, ref } from 'vue'
+import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import {
   CheckCircle2,
   Database,
-  Globe,
   LogOut,
   RefreshCw,
-  RotateCcw,
   Server,
+  ShieldCheck,
 } from 'lucide-vue-next'
 import AppShell from '../components/AppShell.vue'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
+import TfaDisableModal from '../components/TfaDisableModal.vue'
+import TfaSetupModal from '../components/TfaSetupModal.vue'
 import { getApi } from '../lib/api'
-import {
-  defaultWebClientUrl,
-  resetWebClientUrl,
-  saveWebClientUrl,
-  storedWebClientUrl,
-} from '../lib/control'
 import {
   clearSession,
   displayName,
@@ -34,12 +29,69 @@ const testing = ref(false)
 const testResult = ref('')
 const resetOpen = ref(false)
 const resetBusy = ref(false)
-const savedWebUrl = ref(storedWebClientUrl())
-const webClientInput = ref(savedWebUrl.value)
 
-const effectiveWebUrl = computed(
-  () => savedWebUrl.value.trim() || defaultWebClientUrl() || ''
-)
+const tfa = ref({ enabled: false })
+const tfaLoading = ref(true)
+const tfaError = ref('')
+const tfaSetupOpen = ref(false)
+const tfaSetup = ref(null)
+const tfaSetupBusy = ref(false)
+const tfaSetupError = ref('')
+const tfaDisableOpen = ref(false)
+const tfaDisableBusy = ref(false)
+const tfaDisableError = ref('')
+
+onMounted(loadTfa)
+
+async function loadTfa() {
+  try {
+    tfa.value = await api.getTfaStatus()
+  } catch (e) {
+    tfaError.value = e.message || '无法读取双重认证状态。'
+  } finally {
+    tfaLoading.value = false
+  }
+}
+
+async function startTfaSetup() {
+  tfaSetupError.value = ''
+  try {
+    tfaSetup.value = await api.setupTfa()
+    tfaSetupOpen.value = true
+  } catch (e) {
+    notify(e.message || '无法生成双重认证密钥。', 'error')
+  }
+}
+
+async function enableTfa(code) {
+  tfaSetupBusy.value = true
+  tfaSetupError.value = ''
+  try {
+    await api.enableTfa(code)
+    tfa.value = { enabled: true }
+    tfaSetupOpen.value = false
+    notify('双重认证已启用。')
+  } catch (e) {
+    tfaSetupError.value = e.message || '验证码校验失败。'
+  } finally {
+    tfaSetupBusy.value = false
+  }
+}
+
+async function disableTfa(payload) {
+  tfaDisableBusy.value = true
+  tfaDisableError.value = ''
+  try {
+    await api.disableTfa(payload)
+    tfa.value = { enabled: false }
+    tfaDisableOpen.value = false
+    notify('双重认证已关闭。')
+  } catch (e) {
+    tfaDisableError.value = e.message || '无法关闭双重认证。'
+  } finally {
+    tfaDisableBusy.value = false
+  }
+}
 
 async function testConnection() {
   testing.value = true
@@ -54,26 +106,6 @@ async function testConnection() {
   } finally {
     testing.value = false
   }
-}
-
-function saveWebClient() {
-  try {
-    const normalized = saveWebClientUrl(webClientInput.value)
-    webClientInput.value = normalized
-    savedWebUrl.value = normalized
-    notify(
-      normalized ? '网页远控地址已保存。' : '已改为使用默认网页远控地址。'
-    )
-  } catch {
-    notify('请输入有效的网址，例如 https://rd.example.com/web。', 'error')
-  }
-}
-
-function restoreDefaultWebClient() {
-  resetWebClientUrl()
-  webClientInput.value = ''
-  savedWebUrl.value = ''
-  notify('已恢复默认网页远控地址。')
 }
 
 async function resetDemo() {
@@ -179,57 +211,71 @@ function logout() {
         <section class="settings-card">
           <div class="section-head">
             <div>
-              <h3>远程控制</h3>
+              <h3>账号安全</h3>
               <p class="desc">
-                设备页的“远程控制”会优先调用本机已安装的 RustDesk 客户端；
-                也可以在这里配置 RustDesk Server Pro 网页客户端地址，在浏览器中发起远控。
+                为当前账号启用基于时间的一次性密码（TOTP）。启用后，网页控制台与
+                RustDesk 客户端登录都需要额外输入身份验证器中的 6 位动态码。
               </p>
             </div>
-            <Globe :size="16" class="faint" />
+            <ShieldCheck :size="16" class="faint" />
           </div>
 
-          <div class="field">
-            <label class="label" for="web-client-url">网页远控地址</label>
-            <div class="inline-form">
-              <input
-                id="web-client-url"
-                v-model="webClientInput"
-                class="input"
-                type="url"
-                :placeholder="defaultWebClientUrl() || 'https://rd.example.com/web'"
-                @keyup.enter="saveWebClient"
-              />
-              <button
-                class="btn btn-secondary"
-                type="button"
-                @click="saveWebClient"
-              >
-                保存
-              </button>
+          <dl class="detail-list">
+            <div class="detail-row">
+              <dt>双重认证</dt>
+              <dd>
+                <span
+                  class="pill"
+                  :class="
+                    tfaLoading
+                      ? 'pill-offline'
+                      : tfa.enabled
+                        ? 'pill-online'
+                        : 'pill-disabled'
+                  "
+                >
+                  <span class="dot" />
+                  {{
+                    tfaLoading
+                      ? '读取中'
+                      : tfa.enabled
+                        ? '已启用'
+                        : '未启用'
+                  }}
+                </span>
+              </dd>
             </div>
-          </div>
+            <div class="detail-row">
+              <dt>验证方式</dt>
+              <dd>身份验证器应用 · TOTP（30 秒）</dd>
+            </div>
+          </dl>
 
-          <p class="desc" style="margin-top: 0">
-            当前生效地址：
-            <span class="mono" style="font-size: 11px">
-              {{ effectiveWebUrl || '未配置' }}
-            </span>
+          <p v-if="tfaError" class="desc" style="color: var(--red)">
+            {{ tfaError }}
           </p>
 
           <div class="settings-actions">
             <button
-              class="btn btn-ghost btn-sm"
+              v-if="tfa.enabled"
+              class="btn btn-danger-ghost btn-sm"
               type="button"
-              @click="restoreDefaultWebClient"
+              :disabled="tfaLoading"
+              @click="tfaDisableError = ''; tfaDisableOpen = true"
             >
-              <RotateCcw :size="14" />
-              恢复默认
+              关闭双重认证
+            </button>
+            <button
+              v-else
+              class="btn btn-primary btn-sm"
+              type="button"
+              :disabled="tfaLoading"
+              @click="startTfaSetup"
+            >
+              <ShieldCheck :size="14" />
+              启用双重认证
             </button>
           </div>
-
-          <p v-if="session.demo" class="desc" style="margin-top: 12px">
-            演示模式不会连接真实服务器，因此网页远控在演示模式下不可用。
-          </p>
         </section>
 
         <section v-if="session.demo" class="settings-card">
@@ -291,6 +337,23 @@ function logout() {
         </section>
       </div>
     </main>
+
+    <TfaSetupModal
+      v-if="tfaSetupOpen && tfaSetup"
+      :setup="tfaSetup"
+      :busy="tfaSetupBusy"
+      :error="tfaSetupError"
+      @cancel="!tfaSetupBusy && (tfaSetupOpen = false)"
+      @submit="enableTfa"
+    />
+
+    <TfaDisableModal
+      v-if="tfaDisableOpen"
+      :busy="tfaDisableBusy"
+      :error="tfaDisableError"
+      @cancel="!tfaDisableBusy && (tfaDisableOpen = false)"
+      @submit="disableTfa"
+    />
 
     <ConfirmDialog
       v-if="resetOpen"

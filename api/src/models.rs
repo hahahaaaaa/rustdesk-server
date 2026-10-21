@@ -1,4 +1,4 @@
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::{json, Map, Value};
 
 pub const ONLINE_WINDOW_SECS: i64 = 120;
@@ -77,6 +77,44 @@ pub struct AssignRequest {
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
+pub struct UserCreateRequest {
+    #[serde(default)]
+    pub username: String,
+    #[serde(default)]
+    pub password: String,
+    #[serde(default)]
+    pub display_name: String,
+    #[serde(default)]
+    pub email: String,
+    #[serde(default)]
+    pub note: String,
+    #[serde(default)]
+    pub is_admin: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct UserUpdateRequest {
+    #[serde(default)]
+    pub password: Option<String>,
+    #[serde(default)]
+    pub display_name: Option<String>,
+    #[serde(default)]
+    pub email: Option<String>,
+    #[serde(default)]
+    pub note: Option<String>,
+    #[serde(default)]
+    pub status: Option<i64>,
+    #[serde(default)]
+    pub is_admin: Option<bool>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct UserGroupsRequest {
+    #[serde(default)]
+    pub groups: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
 pub struct GroupCreateRequest {
     #[serde(default)]
     pub name: String,
@@ -129,6 +167,8 @@ pub struct UserRow {
     pub avatar: String,
     pub status: i64,
     pub is_admin: i64,
+    pub totp_secret: String,
+    pub totp_enabled: i64,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -163,6 +203,7 @@ pub struct GroupRow {
 
 pub fn user_json(row: &UserRow) -> Value {
     json!({
+        "id": row.id,
         "name": row.username,
         "display_name": row.display_name,
         "avatar": row.avatar,
@@ -170,6 +211,7 @@ pub fn user_json(row: &UserRow) -> Value {
         "note": row.note,
         "status": row.status,
         "is_admin": row.is_admin != 0,
+        "tfa_enabled": row.totp_enabled != 0,
         "info": {
             "email_verification": false,
             "email_alarm_notification": false,

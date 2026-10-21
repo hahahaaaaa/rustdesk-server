@@ -246,6 +246,10 @@ pub async fn delete_device(
         .bind(&device_id)
         .execute(&mut *tx)
         .await?;
+    sqlx::query("DELETE FROM strategy_assignments WHERE kind = 'device' AND target_id = ?")
+        .bind(&guid)
+        .execute(&mut *tx)
+        .await?;
     sqlx::query("DELETE FROM devices WHERE guid = ?")
         .bind(&guid)
         .execute(&mut *tx)
@@ -392,6 +396,10 @@ pub async fn delete_group(
     .execute(&mut *tx)
     .await?;
     sqlx::query("DELETE FROM user_device_groups WHERE group_guid = ?")
+        .bind(&guid)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("DELETE FROM strategy_assignments WHERE kind = 'group' AND target_id = ?")
         .bind(&guid)
         .execute(&mut *tx)
         .await?;

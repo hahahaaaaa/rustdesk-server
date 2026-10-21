@@ -9,7 +9,7 @@ use crate::error::AppError;
 use crate::models::{user_json, CurrentUserRequest, LoginRequest, UserRow};
 use crate::AppState;
 
-const USER_COLUMNS: &str = "id, username, display_name, password_hash, email, note, avatar, status, is_admin, created_at, updated_at";
+const USER_COLUMNS: &str = "id, username, display_name, password_hash, email, note, avatar, status, is_admin, totp_secret, totp_enabled, created_at, updated_at";
 
 pub async fn login(
     State(state): State<AppState>,
@@ -18,7 +18,15 @@ pub async fn login(
     let Json(request) = payload
         .map_err(|err| AppError::BadRequest(format!("请求格式错误：{err}")))?;
     let username = request.username.trim();
-    if username.is_empty() || request.password.is_empty() {
+    let code = if !request.tfa_code.trim().is_empty() {
+        request.tfa_code.trim()
+    } else {
+        request.verification_code.trim()
+    };
+    if username.is_empty() {
+        return Err(AppError::BadRequest("请输入用户名。".to_owned()));
+    }
+    if request.password.is_empty() && (code.is_empty() || request.secret.trim().is_empty()) {
         return Err(AppError::BadRequest("请输入用户名和密码。".to_owned()));
     }
 
@@ -30,23 +38,58 @@ pub async fn login(
     let user = match user {
         Some(user) => user,
         None => {
+            super::audit(&state, username, "login_failed", "", "unknown_user").await;
             return Err(AppError::Unauthorized("用户名或密码错误。".to_owned()));
         }
     };
 
-    match bcrypt::verify(&request.password, &user.password_hash) {
-        Ok(true) => {}
-        Ok(false) => {
-            return Err(AppError::Unauthorized("用户名或密码错误。".to_owned()));
+    if !request.password.is_empty() {
+        match bcrypt::verify(&request.password, &user.password_hash) {
+            Ok(true) => {}
+            Ok(false) => {
+                super::audit(&state, username, "login_failed", "", "bad_password").await;
+                return Err(AppError::Unauthorized("用户名或密码错误。".to_owned()));
+            }
+            Err(err) => {
+                tracing::warn!(username = %user.username, error = %err, "stored password hash is invalid");
+                return Err(AppError::Unauthorized("用户名或密码错误。".to_owned()));
+            }
         }
-        Err(err) => {
-            tracing::warn!(username = %user.username, error = %err, "stored password hash is invalid");
-            return Err(AppError::Unauthorized("用户名或密码错误。".to_owned()));
-        }
+    } else if user.totp_enabled == 0 {
+        super::audit(&state, username, "login_failed", "", "bad_password").await;
+        return Err(AppError::Unauthorized("用户名或密码错误。".to_owned()));
     }
 
     if user.status != 1 {
         return Err(AppError::Forbidden("账号已被禁用。".to_owned()));
+    }
+
+    if user.totp_enabled != 0 {
+        if code.is_empty() {
+            let challenge = super::tfa::issue_login_challenge(&state, &user).await?;
+            return Ok((
+                StatusCode::OK,
+                Json(json!({
+                    "access_token": "",
+                    "type": "email_check",
+                    "tfa_type": "totp",
+                    "secret": challenge,
+                    "user": user_json(&user),
+                })),
+            ));
+        }
+        let jti = super::tfa::check_login_challenge(
+            &state,
+            &user.username,
+            request.secret.trim(),
+        )
+        .await?;
+        if !crate::totp::verify_code(&user.totp_secret, code, crate::models::now_secs()) {
+            super::tfa::fail_login_challenge(&state, &jti).await?;
+            super::audit(&state, &user.username, "login_failed", "", "bad_tfa_code").await;
+            return Err(AppError::Unauthorized("验证码不正确。".to_owned()));
+        }
+        super::tfa::complete_login_challenge(&state, &jti).await?;
     }
 
     if !request.id.trim().is_empty() {

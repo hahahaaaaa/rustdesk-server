@@ -7,7 +7,6 @@ on:
     paths-ignore:
       - "docs/**"
       - "README.md"
-      - "web-console/**"
   workflow_dispatch:
 
 permissions:
@@ -22,6 +21,36 @@ env:
   IMAGE: ghcr.io/hahahaaaaa/rustdesk-server
 
 jobs:
+  console:
+    name: Build web console
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: web-console/package-lock.json
+
+      - name: Install dependencies
+        working-directory: web-console
+        run: npm ci
+
+      - name: Build
+        working-directory: web-console
+        run: npm run build
+
+      - name: Upload console
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-console-dist
+          path: web-console/dist
+          if-no-files-found: error
+
   binaries:
     name: Build binaries - ${{ matrix.name }}
     runs-on: ubuntu-22.04
@@ -55,6 +84,9 @@ jobs:
       - name: Build hbbs, hbbr and rustdesk-utils
         run: cross build --release --target ${{ matrix.target }} --bin hbbs --bin hbbr --bin rustdesk-utils
 
+      - name: Build management API
+        run: cross build --release --target ${{ matrix.target }} --manifest-path api/Cargo.toml --target-dir target
+
       - name: Upload binaries
         uses: actions/upload-artifact@v4
         with:
@@ -63,11 +95,12 @@ jobs:
             target/${{ matrix.target }}/release/hbbs
             target/${{ matrix.target }}/release/hbbr
             target/${{ matrix.target }}/release/rustdesk-utils
+            target/${{ matrix.target }}/release/rustdesk-api
           if-no-files-found: error
 
   image:
     name: Push image - ${{ matrix.name }}
-    needs: binaries
+    needs: [binaries, console]
     runs-on: ubuntu-22.04
     timeout-minutes: 60
     strategy:
@@ -86,6 +119,12 @@ jobs:
         with:
           name: binaries-${{ matrix.name }}
           path: docker/rootfs/usr/bin
+
+      - name: Download web console
+        uses: actions/download-artifact@v4
+        with:
+          name: web-console-dist
+          path: docker/rootfs/usr/share/rustdesk-console
 
       - name: Make files executable
         run: |

@@ -177,9 +177,10 @@ image, the working directory is `/data`.
 
 ## Docker image variables
 
-The supervisor image (`rustdesk/rustdesk-server-s6`) starts both binaries with
-s6 and adds a few convenience variables handled by its service scripts, **not**
-by `hbbs`/`hbbr` directly:
+The supervisor image built by this repository
+(`ghcr.io/hahahaaaaa/rustdesk-server:latest`, based on s6-overlay) starts
+`hbbs`, `hbbr`, and `rustdesk-api` with s6 and adds a few convenience variables
+handled by its service scripts, **not** by `hbbs`/`hbbr` directly:
 
 | Variable | Default | Description |
 |---|---|---|
@@ -190,6 +191,88 @@ by `hbbs`/`hbbr` directly:
 
 Any variable from the tables above can also be passed straight through the
 container's environment (e.g. `-e ALWAYS_USE_RELAY=Y`, `-e RUST_LOG=debug`).
+
+### Management API / web console variables
+
+The same s6 image runs `rustdesk-api` on port `21114` and serves the browser
+console from `/usr/share/rustdesk-console`. The API stores its data in
+`/data/api.sqlite3` and reads the following variables:
+
+| Variable | Default | Description |
+|---|---|---|
+| `API_BIND` | `0.0.0.0` | Address the API listens on. |
+| `API_PORT` | `21114` | API and web console port. |
+| `API_DB_PATH` | `/data/api.sqlite3` | API SQLite database. Keep it on the `/data` volume. |
+| `API_CONSOLE_DIR` | `/usr/share/rustdesk-console` | Static web console bundle. |
+| `API_ADMIN_USERNAME` | `admin` | Initial administrator username, only used when the users table is empty. |
+| `API_ADMIN_PASSWORD` | *(generated)* | Initial administrator password. When unset, a random password is written to the container log once. Set it explicitly on first start. |
+| `API_JWT_SECRET` | *(generated)* | JWT signing key. When unset, a random key is generated and stored in the API database. |
+| `API_TOKEN_TTL_HOURS` | `168` | Login token lifetime. |
+| `API_CORS_ORIGINS` | `*` | Comma-separated allowed CORS origins. The console is same-origin by default, so this is only needed for a separately hosted UI. |
+| `API_AB_MAX_PEERS` | `0` | Maximum peers per address book (`0` = unlimited). |
+| `API_RENDEZVOUS_ADDR` | `127.0.0.1:21116` | `hbbs` TCP address used by browser remote control. |
+| `API_RELAY_ADDR` | `127.0.0.1:21117` | `hbbr` TCP address used by browser remote control. |
+| `API_SERVER_PUBLIC_KEY` | *(auto)* | `hbbs` public key used to verify the peer identity signature. Normally read from `/data/id_ed25519.pub` (or next to the API database). |
+| `API_SERVER_PUBLIC_KEY_FILE` | *(auto)* | Path to the `id_ed25519.pub` file when it is not next to the API database or in `/data`. |
+| `API_LICENSE_KEY` | server public key | Key sent to `hbbs`/`hbbr` in remote-control requests. Leave empty for the default key-pair mode; set it only when both servers are started with a custom `-k` value. |
+
+### Browser remote control
+
+The console can control a device directly in the browser (Settings are not
+required):
+
+* Open the device menu and choose **网页远控** (Web control), or navigate to
+  `/#/control/<device-guid>`.
+* The browser talks only to the API on port `21114` over WebSocket. The API
+  opens TCP connections to `hbbs` (`21116`) and `hbbr` (`21117`), so those
+  ports do not need to be exposed to the browser.
+* The page requires **HTTPS** (HTTP is accepted only on `localhost`) because
+  WebCodecs video decoding and clipboard access are restricted to secure
+  contexts. Use a current Chrome or Edge; Safari/Firefox may lack VP9 WebCodecs
+  support.
+* `hbbs` must run with a key pair (the default `-k -` behavior). The API signs
+  nothing itself: it reads `id_ed25519.pub` from `/data` and verifies the
+  `RelayResponse` signature produced by `hbbs`, then verifies the peer's
+  signed ID. If `hbbs` is started with an empty key (`-k ""`), remote control
+  cannot verify the peer and is rejected.
+* When `hbbs` is behind a reverse proxy or on another host, adjust
+  `API_RENDEZVOUS_ADDR` and `API_RELAY_ADDR`. If a relay other than the one
+  reachable from the API is advertised to peers, point `API_RELAY_ADDR` at the
+  relay the API should proxy to.
+* Every start is recorded in the audit log as `web_control.start`.
+* To serve the console over HTTPS, terminate TLS in front of the API and keep
+  WebSocket upgrades enabled. For example, with nginx:
+
+  ```nginx
+  server {
+      listen 443 ssl;
+      server_name rd.example.com;
+      ssl_certificate     /etc/nginx/certs/fullchain.pem;
+      ssl_certificate_key /etc/nginx/certs/privkey.pem;
+
+      location / {
+          proxy_pass http://127.0.0.1:21114;
+          proxy_http_version 1.1;
+          proxy_set_header Host $host;
+          proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+          proxy_set_header X-Forwarded-Proto $scheme;
+          proxy_set_header Upgrade $http_upgrade;
+          proxy_set_header Connection "upgrade";
+          proxy_read_timeout 3600s;
+          proxy_send_timeout 3600s;
+      }
+  }
+  ```
+
+
+When `API_ADMIN_PASSWORD` is not set and the database is new, retrieve the
+generated password from the log:
+
+```bash
+docker logs rustdesk-server 2>&1 | grep "created the initial administrator"
+```
+
+Then open `http://<server>:21114/` and change the password.
 
 The classic scratch image (`rustdesk/rustdesk-server`) contains only the
 binaries and does **not** implement `RELAY`, `ENCRYPTED_ONLY`, `KEY_PUB`, or
@@ -220,13 +303,16 @@ PORT=22116
 ```yaml
 services:
   rustdesk-server:
-    image: rustdesk/rustdesk-server-s6:latest
+    image: ghcr.io/hahahaaaaa/rustdesk-server:latest
     environment:
       - RELAY=rustdesk.example.com:21117
       - ALWAYS_USE_RELAY=Y
       - RUST_LOG=info
       - SINGLE_BANDWIDTH=256
+      - API_ADMIN_USERNAME=admin
+      - API_ADMIN_PASSWORD=change-this-password
     ports:
+      - "21114:21114"
       - "21115:21115"
       - "21116:21116"
       - "21116:21116/udp"
@@ -252,6 +338,7 @@ ExecStart=/usr/bin/hbbs
 
 | Port | Proto | Server | Purpose |
 |---|---|---|---|
+| 21114 | TCP | rustdesk-api | Management API and web console |
 | 21115 | TCP | hbbs | NAT type test (`PORT-1`) |
 | 21116 | TCP + UDP | hbbs | ID registration / rendezvous / hole punching (`PORT`) |
 | 21117 | TCP | hbbr | Relay (`hbbr PORT`) |

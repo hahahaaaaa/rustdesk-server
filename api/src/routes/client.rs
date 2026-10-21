@@ -15,7 +15,7 @@ use crate::models::{
 };
 use crate::AppState;
 
-const USER_COLUMNS: &str = "u.id, u.username, u.display_name, u.password_hash, u.email, u.note, u.avatar, u.status, u.is_admin, u.created_at, u.updated_at";
+const USER_COLUMNS: &str = "u.id, u.username, u.display_name, u.password_hash, u.email, u.note, u.avatar, u.status, u.is_admin, u.totp_secret, u.totp_enabled, u.created_at, u.updated_at";
 
 pub async fn heartbeat(
     State(state): State<AppState>,
@@ -54,16 +54,50 @@ pub async fn heartbeat(
         existing = find_device_guid(&state, id, uuid).await?;
     }
 
+    let mut response = serde_json::Map::new();
     if let Some(guid) = existing {
         sqlx::query("UPDATE devices SET last_online = ?, updated_at = ? WHERE guid = ?")
             .bind(now)
             .bind(now)
-            .bind(guid)
+            .bind(&guid)
             .execute(&state.db)
             .await?;
+        if let Some((modified_at, config)) = resolve_strategy(&state, &guid).await? {
+            response.insert("modified_at".to_owned(), json!(modified_at));
+            response.insert(
+                "strategy".to_owned(),
+                json!({ "config_options": config }),
+            );
+        }
     }
 
-    Ok(Json(json!({})))
+    Ok(Json(Value::Object(response)))
+}
+
+async fn resolve_strategy(
+    state: &AppState,
+    guid: &str,
+) -> Result<Option<(i64, Value)>, AppError> {
+    let row: Option<(i64, String)> = sqlx::query_as(
+        "SELECT s.updated_at, s.config
+         FROM strategies s
+         JOIN strategy_assignments a ON a.strategy_guid = s.guid
+         JOIN devices d ON d.guid = ?
+         WHERE s.enabled = 1 AND (
+             (a.kind = 'device' AND (a.target_id = d.guid OR a.target_id = d.id))
+             OR (a.kind = 'user' AND d.user IS NOT NULL AND a.target_id = d.user)
+             OR (a.kind = 'group' AND d.device_group_guid IS NOT NULL
+                 AND a.target_id = d.device_group_guid)
+         )
+         ORDER BY CASE a.kind WHEN 'device' THEN 0 WHEN 'user' THEN 1 ELSE 2 END
+         LIMIT 1",
+    )
+    .bind(guid)
+    .fetch_optional(&state.db)
+    .await?;
+    Ok(row.map(|(modified_at, config)| {
+        (modified_at, super::strategies::parse_config(&config))
+    }))
 }
 
 pub async fn sysinfo(
@@ -104,14 +138,14 @@ async fn store_sysinfo(state: &AppState, body: &Value) -> Result<(), AppError> {
         })
         .unwrap_or_default();
     let now = now_secs();
+    let owner: Option<String> =
+        sqlx::query_scalar("SELECT username FROM device_bindings WHERE device_id = ?")
+            .bind(id)
+            .fetch_optional(&state.db)
+            .await?;
     let mut existing = find_device_guid(state, id, uuid).await?;
     if existing.is_none() {
         let guid = uuid::Uuid::new_v4().to_string();
-        let owner: Option<String> =
-            sqlx::query_scalar("SELECT username FROM device_bindings WHERE device_id = ?")
-                .bind(id)
-                .fetch_optional(&state.db)
-                .await?;
         sqlx::query(
             "INSERT OR IGNORE INTO devices
                 (guid, id, uuid, user, device_name, note, disabled, last_online, info, version, created_at, updated_at)

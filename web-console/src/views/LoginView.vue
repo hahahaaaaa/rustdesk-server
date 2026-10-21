@@ -33,6 +33,12 @@ const token = ref('')
 const showPassword = ref(false)
 const busy = ref(false)
 const error = ref('')
+const tfaChallenge = ref('')
+const tfaType = ref('totp')
+const tfaUser = ref(null)
+const tfaCode = ref('')
+
+const tfaStep = computed(() => Boolean(tfaChallenge.value))
 
 const canSubmit = computed(() => {
   if (!server.value.trim()) return false
@@ -49,7 +55,12 @@ function finish() {
 }
 
 async function signIn() {
-  if (busy.value || !canSubmit.value) return
+  if (busy.value) return
+  if (tfaStep.value) {
+    await verifyCode()
+    return
+  }
+  if (!canSubmit.value) return
   busy.value = true
   error.value = ''
   try {
@@ -61,6 +72,14 @@ async function signIn() {
         username: username.value.trim(),
         password: password.value,
       })
+      if (result.tfaRequired) {
+        tfaChallenge.value = result.challenge
+        tfaType.value = result.tfaType
+        tfaUser.value = result.user
+        tfaCode.value = ''
+        busy.value = false
+        return
+      }
       saveSession({
         baseUrl,
         token: result.token,
@@ -91,6 +110,46 @@ async function signIn() {
     return
   }
   busy.value = false
+}
+
+async function verifyCode() {
+  const code = tfaCode.value.trim()
+  if (busy.value || code.length < 6) return
+  busy.value = true
+  error.value = ''
+  try {
+    const baseUrl = normalizeBaseUrl(server.value)
+    const result = await loginToServer({
+      baseUrl,
+      username: username.value.trim(),
+      password: password.value,
+      tfaCode: code,
+      tfaSecret: tfaChallenge.value,
+    })
+    if (result.tfaRequired) {
+      tfaChallenge.value = result.challenge
+      error.value = '验证码未通过，请重试。'
+      return
+    }
+    saveSession({
+      baseUrl,
+      token: result.token,
+      user: result.user,
+      demo: false,
+    })
+    finish()
+  } catch (e) {
+    error.value = e.message || '验证码验证失败，请重试。'
+  } finally {
+    busy.value = false
+  }
+}
+
+function cancelTfa() {
+  tfaChallenge.value = ''
+  tfaCode.value = ''
+  tfaUser.value = null
+  error.value = ''
 }
 
 function useDemo() {
@@ -154,113 +213,229 @@ function switchMode(next) {
         </p>
 
         <form class="login-form" @submit.prevent="signIn">
-          <div class="field">
-            <label class="label" for="server">服务器地址</label>
-            <input
-              id="server"
-              v-model="server"
-              class="input"
-              autocomplete="url"
-              placeholder="https://rd.example.com:21114"
-            />
-          </div>
-
-          <template v-if="mode === 'password'">
-            <div class="field">
-              <label class="label" for="username">用户名</label>
-              <input
-                id="username"
-                v-model="username"
-                class="input"
-                autocomplete="username"
-                placeholder="admin"
-              />
-            </div>
-            <div class="field">
-              <label class="label" for="password">密码</label>
-              <div style="position: relative">
-                <input
-                  id="password"
-                  v-model="password"
-                  class="input"
-                  :type="showPassword ? 'text' : 'password'"
-                  autocomplete="current-password"
-                  placeholder="••••••••"
-                  style="padding-right: 38px"
-                />
-                <button
-                  class="icon-btn"
-                  type="button"
-                  style="position: absolute; right: 3px; top: 3px"
-                  :aria-label="showPassword ? '隐藏密码' : '显示密码'"
-                  @click="showPassword = !showPassword"
-                >
-                  <EyeOff v-if="showPassword" :size="15" />
-                  <Eye v-else :size="15" />
-                </button>
+          <template v-if="tfaStep">
+            <div class="tfa-card">
+              <div class="tfa-icon"><ShieldCheck :size="18" /></div>
+              <div>
+                <h2>两步验证</h2>
+                <p>
+                  账号
+                  <strong>{{ tfaUser?.name || username }}</strong>
+                  已启用双重认证，请打开身份验证器应用并输入当前的 6 位动态验证码。
+                </p>
               </div>
             </div>
+
+            <div class="field">
+              <label class="label" for="tfa-code">
+                验证码
+                <span class="hint">{{ tfaType === 'totp' ? '30 秒刷新一次' : '查收邮件或短信' }}</span>
+              </label>
+              <input
+                id="tfa-code"
+                v-model="tfaCode"
+                class="input tfa-input"
+                inputmode="numeric"
+                autocomplete="one-time-code"
+                maxlength="8"
+                placeholder="000000"
+                autofocus
+              />
+            </div>
+
+            <div v-if="error" class="login-error">{{ error }}</div>
+
+            <button
+              class="btn btn-primary"
+              type="submit"
+              :disabled="busy || tfaCode.trim().length < 6"
+            >
+              <span v-if="busy" class="spinner" />
+              <template v-else>
+                验证并登录
+                <ArrowRight :size="15" />
+              </template>
+            </button>
+
+            <button
+              class="btn btn-ghost btn-sm tfa-back"
+              type="button"
+              :disabled="busy"
+              @click="cancelTfa"
+            >
+              返回重新登录
+            </button>
           </template>
 
-          <div v-else class="field">
-            <label class="label" for="token">
-              访问令牌
-              <span class="hint">由服务器管理员提供</span>
-            </label>
-            <textarea
-              id="token"
-              v-model="token"
-              class="textarea"
-              style="min-height: 84px; font-family: var(--font-mono); font-size: 11.5px"
-              placeholder="eyJhbGciOi…"
-            />
-          </div>
+          <template v-else>
+            <div class="field">
+              <label class="label" for="server">服务器地址</label>
+              <input
+                id="server"
+                v-model="server"
+                class="input"
+                autocomplete="url"
+                placeholder="https://rd.example.com:21114"
+              />
+            </div>
 
-          <div v-if="error" class="login-error">{{ error }}</div>
-
-          <button
-            class="btn btn-primary"
-            type="submit"
-            :disabled="busy || !canSubmit"
-          >
-            <span v-if="busy" class="spinner" />
-            <template v-else>
-              登录
-              <ArrowRight :size="15" />
+            <template v-if="mode === 'password'">
+              <div class="field">
+                <label class="label" for="username">用户名</label>
+                <input
+                  id="username"
+                  v-model="username"
+                  class="input"
+                  autocomplete="username"
+                  placeholder="admin"
+                />
+              </div>
+              <div class="field">
+                <label class="label" for="password">密码</label>
+                <div style="position: relative">
+                  <input
+                    id="password"
+                    v-model="password"
+                    class="input"
+                    :type="showPassword ? 'text' : 'password'"
+                    autocomplete="current-password"
+                    placeholder="••••••••"
+                    style="padding-right: 38px"
+                  />
+                  <button
+                    class="icon-btn"
+                    type="button"
+                    style="position: absolute; right: 3px; top: 3px"
+                    :aria-label="showPassword ? '隐藏密码' : '显示密码'"
+                    @click="showPassword = !showPassword"
+                  >
+                    <EyeOff v-if="showPassword" :size="15" />
+                    <Eye v-else :size="15" />
+                  </button>
+                </div>
+              </div>
             </template>
-          </button>
+
+            <div v-else class="field">
+              <label class="label" for="token">
+                访问令牌
+                <span class="hint">由服务器管理员提供</span>
+              </label>
+              <textarea
+                id="token"
+                v-model="token"
+                class="textarea"
+                style="min-height: 84px; font-family: var(--font-mono); font-size: 11.5px"
+                placeholder="eyJhbGciOi…"
+              />
+            </div>
+
+            <div v-if="error" class="login-error">{{ error }}</div>
+
+            <button
+              class="btn btn-primary"
+              type="submit"
+              :disabled="busy || !canSubmit"
+            >
+              <span v-if="busy" class="spinner" />
+              <template v-else>
+                登录
+                <ArrowRight :size="15" />
+              </template>
+            </button>
+          </template>
         </form>
 
-        <div class="login-divider">或</div>
+        <template v-if="!tfaStep">
+          <div class="login-divider">或</div>
 
-        <button
-          class="btn login-demo"
-          type="button"
-          :disabled="busy"
-          @click="useDemo"
-        >
-          体验演示控制台
-        </button>
-
-        <p class="login-fine">
           <button
-            class="btn btn-ghost btn-sm"
+            class="btn login-demo"
             type="button"
-            style="height: auto; padding: 0; font-size: 10.5px; font-weight: 400"
-            @click="switchMode(mode === 'password' ? 'token' : 'password')"
+            :disabled="busy"
+            @click="useDemo"
           >
-            <KeyRound :size="11" />
-            {{
-              mode === 'password'
-                ? '改用访问令牌登录'
-                : '改用用户名和密码登录'
-            }}
+            体验演示控制台
           </button>
-          <br /><br />
-          凭据会从当前浏览器直接发送到你的 RustDesk 服务器。如果控制台部署在其他域名下，服务器需要通过
-          CORS 允许该来源。会话令牌仅保存在当前浏览器中。
-        </p>
+
+          <p class="login-fine">
+            <button
+              class="btn btn-ghost btn-sm"
+              type="button"
+              style="height: auto; padding: 0; font-size: 10.5px; font-weight: 400"
+              @click="switchMode(mode === 'password' ? 'token' : 'password')"
+            >
+              <KeyRound :size="11" />
+              {{
+                mode === 'password'
+                  ? '改用访问令牌登录'
+                  : '改用用户名和密码登录'
+              }}
+            </button>
+            <br /><br />
+            凭据会从当前浏览器直接发送到你的 RustDesk 服务器。如果控制台部署在其他域名下，服务器需要通过
+            CORS 允许该来源。会话令牌仅保存在当前浏览器中。
+          </p>
+        </template>
       </div>
     </section>
   </div>
 </template>
+
+<style scoped>
+.tfa-card {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  padding: 13px 14px;
+  margin-bottom: 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--wash);
+}
+
+.tfa-icon {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 34px;
+  height: 34px;
+  border-radius: 9999px;
+  background: #fff;
+  box-shadow: inset 0 0 0 1px var(--line);
+  color: var(--ink);
+}
+
+.tfa-card h2 {
+  margin: 0 0 4px;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.tfa-card p {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--muted);
+}
+
+.tfa-card strong {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.tfa-input {
+  height: 46px;
+  font-family: var(--font-mono);
+  font-size: 20px;
+  letter-spacing: 8px;
+  text-align: center;
+}
+
+.tfa-back {
+  width: 100%;
+  margin-top: 8px;
+  justify-content: center;
+}
+</style>

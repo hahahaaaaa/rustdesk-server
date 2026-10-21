@@ -1,0 +1,20 @@
+services:
+  rustdesk-server:
+    image: ghcr.io/hahahaaaaa/rustdesk-server:latest
+    container_name: rustdesk-server
+    environment:
+      - RELAY=rustdesk.example.com:21117
+      - API_ADMIN_USERNAME=admin
+      - API_ADMIN_PASSWORD=change-this-password
+      - RUST_LOG=info
+    ports:
+      - "21114:21114"
+      - "21115:21115"
+      - "21116:21116"
+      - "21116:21116/udp"
+      - "21117:21117"
+      - "21118:21118"
+      - "21119:21119"
+    volumes:
+      - ./data:/data
+    restart: unless-stopped

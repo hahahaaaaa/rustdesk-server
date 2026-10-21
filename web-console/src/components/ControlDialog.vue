@@ -13,7 +13,6 @@ import {
   copyDeviceId,
   openNativeControl,
   openWebControl,
-  webClientUrl,
 } from '../lib/control'
 import { session } from '../lib/session'
 import { notify } from '../lib/toast'
@@ -26,12 +25,12 @@ const emit = defineEmits(['close'])
 
 const name = computed(() => deviceName(props.device))
 const state = computed(() => deviceState(props.device))
-const targetWebUrl = computed(() => webClientUrl())
-const webReady = computed(() => !session.demo && Boolean(targetWebUrl.value))
+const online = computed(() => state.value === 'online')
+const webReady = computed(() => !session.demo && online.value)
 const webHint = computed(() => {
   if (session.demo) return '演示模式不连接真实服务器，网页远控不可用。'
-  if (!targetWebUrl.value) return '请先在设置中配置网页远控地址。'
-  return `将打开 ${targetWebUrl.value}，设备 ID 会自动复制。`
+  if (!online.value) return '设备离线或已禁用，无法发起网页远控。'
+  return '在浏览器中直接操作远程桌面，无需安装额外客户端。'
 })
 
 function controlNative() {
@@ -112,7 +111,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
       </div>
 
       <div class="control-foot">
-        <span class="faint">需要 RustDesk Server Pro 的网页客户端支持。</span>
+        <span class="faint">网页远控由本控制台直接提供，建议使用最新版 Chrome 或 Edge。</span>
         <button class="btn btn-ghost btn-sm" type="button" @click="copyId">
           <Copy :size="13" />
           复制设备 ID

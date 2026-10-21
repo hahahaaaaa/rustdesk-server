@@ -1,5 +1,7 @@
 use std::env;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+use base64::Engine;
 
 #[derive(Clone, Debug)]
 pub struct Config {
@@ -12,6 +14,12 @@ pub struct Config {
     pub admin_password: Option<String>,
     pub cors_origins: Vec<String>,
     pub console_dir: Option<String>,
+    pub ab_max_peer_one_ab: i64,
+    pub rendezvous_addr: String,
+    pub relay_addr: String,
+    pub server_public_key: Option<String>,
+    pub server_public_key_file: Option<PathBuf>,
+    pub license_key: Option<String>,
 }
 
 impl Config {
@@ -57,6 +65,27 @@ impl Config {
                 .filter(|password| !password.is_empty()),
             cors_origins,
             console_dir,
+            ab_max_peer_one_ab: env::var("API_AB_MAX_PEERS")
+                .ok()
+                .and_then(|value| value.parse().ok())
+                .filter(|value| *value >= 0)
+                .unwrap_or(0),
+            rendezvous_addr: env::var("API_RENDEZVOUS_ADDR")
+                .unwrap_or_else(|_| "127.0.0.1:21116".to_owned()),
+            relay_addr: env::var("API_RELAY_ADDR").unwrap_or_else(|_| "127.0.0.1:21117".to_owned()),
+            server_public_key: env::var("API_SERVER_PUBLIC_KEY")
+                .ok()
+                .map(|key| key.trim().to_owned())
+                .filter(|key| !key.is_empty()),
+            server_public_key_file: env::var("API_SERVER_PUBLIC_KEY_FILE")
+                .ok()
+                .map(|path| path.trim().to_owned())
+                .filter(|path| !path.is_empty())
+                .map(PathBuf::from),
+            license_key: env::var("API_LICENSE_KEY")
+                .ok()
+                .map(|key| key.trim().to_owned())
+                .filter(|key| !key.is_empty()),
         }
     }
 
@@ -67,4 +96,34 @@ impl Config {
     pub fn allow_any_origin(&self) -> bool {
         self.cors_origins.is_empty() || self.cors_origins.iter().any(|origin| origin == "*")
     }
+
+    pub fn server_public_key(&self) -> Option<String> {
+        if let Some(key) = self.server_public_key.as_deref() {
+            if valid_public_key(key) {
+                return Some(key.to_owned());
+            }
+        }
+
+        let mut candidates = Vec::new();
+        if let Some(path) = self.server_public_key_file.as_ref() {
+            candidates.push(path.clone());
+        }
+        if let Some(parent) = Path::new(&self.db_path).parent() {
+            candidates.push(parent.join("id_ed25519.pub"));
+        }
+        candidates.push(PathBuf::from("/data/id_ed25519.pub"));
+        candidates.push(PathBuf::from("id_ed25519.pub"));
+
+        candidates.into_iter().find_map(|path| {
+            let key = std::fs::read_to_string(path).ok()?;
+            let key = key.trim();
+            valid_public_key(key).then(|| key.to_owned())
+        })
+    }
+}
+
+fn valid_public_key(key: &str) -> bool {
+    base64::engine::general_purpose::STANDARD
+        .decode(key)
+        .is_ok_and(|bytes| bytes.len() == 32)
 }

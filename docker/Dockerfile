@@ -14,10 +14,13 @@ COPY rootfs /
 
 ENV RELAY=relay.example.com
 ENV ENCRYPTED_ONLY=0
+ENV API_PORT=21114
+ENV API_DB_PATH=/data/api.sqlite3
+ENV API_CONSOLE_DIR=/usr/share/rustdesk-console
 
-EXPOSE 21115 21116 21116/udp 21117 21118 21119
+EXPOSE 21114 21115 21116 21116/udp 21117 21118 21119
 
-HEALTHCHECK --interval=10s --timeout=5s CMD /usr/bin/healthcheck.sh
+HEALTHCHECK --interval=10s --timeout=5s --start-period=30s CMD /usr/bin/healthcheck.sh
 
 WORKDIR /data
 

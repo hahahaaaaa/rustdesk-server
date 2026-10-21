@@ -1,10 +1,16 @@
+mod address_book;
+mod audit;
 mod auth;
 mod client;
 mod console;
+mod strategies;
+mod tfa;
+mod users;
+mod webcontrol;
 
 use axum::{
     http::{HeaderValue, StatusCode},
-    routing::{delete, get, patch, post},
+    routing::{delete, get, patch, post, put},
     Json, Router,
 };
 use serde_json::json;
@@ -21,17 +27,36 @@ pub fn router(state: AppState) -> Router {
     let cors = build_cors(&state.cfg);
     let api = Router::new()
         .route("/api/health", get(health))
+        .route("/api/web-control/session", post(webcontrol::session))
+        .route("/api/web-control/ws", get(webcontrol::ws_proxy))
+        .route("/api/web-control/relay", get(webcontrol::relay_proxy))
         .route("/api/login", post(auth::login))
         .route("/api/logout", post(auth::logout))
         .route("/api/currentUser", post(auth::current_user))
         .route("/api/login-options", get(auth::login_options))
+        .route("/api/2fa", get(tfa::status))
+        .route("/api/2fa/setup", post(tfa::setup))
+        .route("/api/2fa/enable", post(tfa::enable))
+        .route("/api/2fa/disable", post(tfa::disable))
+        .route("/api/users/{id}/2fa/reset", post(tfa::reset_user))
         .route("/api/heartbeat", post(client::heartbeat))
         .route("/api/sysinfo", post(client::sysinfo))
         .route(
             "/api/sysinfo_ver",
             post(client::sysinfo_ver).get(client::sysinfo_ver),
         )
-        .route("/api/users", get(client::list_users))
+        .route(
+            "/api/users",
+            get(client::list_users).post(users::create_user),
+        )
+        .route(
+            "/api/users/{id}",
+            patch(users::update_user).delete(users::delete_user),
+        )
+        .route(
+            "/api/users/{id}/device-groups",
+            get(users::get_user_groups).put(users::set_user_groups),
+        )
         .route("/api/peers", get(client::list_peers))
         .route(
             "/api/device-group/accessible",
@@ -55,6 +80,69 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/device-groups/{guid}",
             patch(console::update_group).delete(console::delete_group),
+        )
+        .route("/api/audit", get(audit::list_audit))
+        .route("/api/audit/actions", get(audit::list_actions))
+        .route(
+            "/api/strategies",
+            get(strategies::list_strategies).post(strategies::create_strategy),
+        )
+        .route("/api/strategies/assign", post(strategies::assign))
+        .route(
+            "/api/strategies/{guid}",
+            get(strategies::get_strategy)
+                .patch(strategies::update_strategy)
+                .delete(strategies::delete_strategy),
+        )
+        .route(
+            "/api/strategies/{guid}/status",
+            put(strategies::set_status),
+        )
+        .route(
+            "/api/strategies/{guid}/assignments",
+            get(strategies::get_assignments),
+        )
+        .route("/api/ab/settings", post(address_book::settings))
+        .route("/api/ab/personal", post(address_book::personal))
+        .route(
+            "/api/ab/shared/profiles",
+            post(address_book::shared_profiles),
+        )
+        .route("/api/ab/peers", post(address_book::peers))
+        .route("/api/ab/tags/{ab}", post(address_book::tags))
+        .route("/api/ab/peer/add/{ab}", post(address_book::add_peer))
+        .route(
+            "/api/ab/peer/update/{ab}",
+            put(address_book::update_peer),
+        )
+        .route(
+            "/api/ab/peer/{ab}",
+            delete(address_book::delete_peers),
+        )
+        .route("/api/ab/tag/add/{ab}", post(address_book::add_tag))
+        .route(
+            "/api/ab/tag/rename/{ab}",
+            put(address_book::rename_tag),
+        )
+        .route(
+            "/api/ab/tag/update/{ab}",
+            put(address_book::update_tag),
+        )
+        .route(
+            "/api/ab/tag/{ab}",
+            delete(address_book::delete_tag),
+        )
+        .route(
+            "/api/address-books",
+            get(address_book::list_books).post(address_book::create_book),
+        )
+        .route(
+            "/api/address-books/{guid}",
+            patch(address_book::update_book).delete(address_book::delete_book),
+        )
+        .route(
+            "/api/address-books/{guid}/shares",
+            get(address_book::get_shares).put(address_book::set_shares),
         );
 
     let app = Router::new()

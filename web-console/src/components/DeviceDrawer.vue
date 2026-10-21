@@ -17,7 +17,6 @@ import { getApi } from '../lib/api'
 import {
   openNativeControl,
   openWebControl,
-  webClientUrl,
 } from '../lib/control'
 import {
   deviceGuid,
@@ -46,15 +45,11 @@ const name = computed(() => deviceName(props.device))
 const os = computed(() => deviceOs(props.device))
 const state = computed(() => deviceState(props.device))
 const online = computed(() => state.value === 'online')
-const targetWebUrl = computed(() => webClientUrl())
-const webReady = computed(
-  () => online.value && !session.demo && Boolean(targetWebUrl.value)
-)
+const webReady = computed(() => online.value && !session.demo)
 const controlHint = computed(() => {
   if (!online.value) return '设备离线或已禁用，无法发起远程控制。'
   if (session.demo) return '演示模式不连接真实服务器，网页远控不可用。'
-  if (!targetWebUrl.value) return '请先在设置中配置网页远控地址。'
-  return '网页远控将在新标签页打开 RustDesk Server Pro 网页客户端，并自动复制设备 ID。'
+  return '网页远控会在本控制台中打开远程桌面，支持键盘、鼠标与剪贴板。'
 })
 
 const renamed = ref(name.value)

@@ -2,11 +2,15 @@
 import { computed, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
+  BookOpen,
   ChevronRight,
   LogOut,
   Menu,
   MonitorSmartphone,
+  ScrollText,
   Settings,
+  ShieldCheck,
+  UserCog,
   Users,
   Wifi,
 } from 'lucide-vue-next'
@@ -64,7 +68,35 @@ function logout() {
           <Users :size="16" />
           分组
         </RouterLink>
+        <RouterLink
+          v-if="session.user?.is_admin"
+          class="nav-link"
+          to="/address-books"
+        >
+          <BookOpen :size="16" />
+          地址簿
+        </RouterLink>
         <div class="nav-label">系统</div>
+        <RouterLink v-if="session.user?.is_admin" class="nav-link" to="/users">
+          <UserCog :size="16" />
+          用户
+        </RouterLink>
+        <RouterLink
+          v-if="session.user?.is_admin"
+          class="nav-link"
+          to="/strategies"
+        >
+          <ShieldCheck :size="16" />
+          策略
+        </RouterLink>
+        <RouterLink
+          v-if="session.user?.is_admin"
+          class="nav-link"
+          to="/audit"
+        >
+          <ScrollText :size="16" />
+          审计日志
+        </RouterLink>
         <RouterLink class="nav-link" to="/settings">
           <Settings :size="16" />
           设置

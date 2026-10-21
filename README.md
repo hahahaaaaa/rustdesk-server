@@ -31,6 +31,17 @@ Three executables will be generated in target/release.
 - hbbr - RustDesk relay server
 - rustdesk-utils - RustDesk CLI utilities
 
+The management API and browser console are separate projects:
+
+```bash
+cargo build --release --manifest-path api/Cargo.toml
+cd web-console && npm ci && npm run build
+```
+
+`rustdesk-api` listens on port `21114` by default and serves
+`web-console/dist` when `API_CONSOLE_DIR` points at it. See
+[Management API and web console](#management-api-and-web-console).
+
 You can find updated binaries on the [Releases](https://github.com/rustdesk/rustdesk-server/releases) page.
 
 ## Configuration
@@ -53,6 +64,39 @@ The most common options:
 See **[docs/environment-variables.md](docs/environment-variables.md)** for the
 full list of variables, the file/flag/env precedence rules, database and relay
 bandwidth tuning, Docker image variables, and examples.
+
+## Management API and web console
+
+The s6 supervisor image built by the "Docker image" workflow bundles `hbbs`,
+`hbbr`, `rustdesk-api`, and the browser console. It keeps the server keys and
+the API database in `/data`. The multi-arch image is published to GitHub
+Container Registry as `ghcr.io/hahahaaaaa/rustdesk-server:latest`
+(`linux/amd64`, `linux/arm64`, `linux/arm/v7`):
+
+```bash
+# Edit RELAY and API_ADMIN_PASSWORD first.
+docker compose up -d
+```
+
+If the package is private, run `docker login ghcr.io` first (use a GitHub
+personal access token with `read:packages`). Packages are private by default
+even when the repository is public; set the package visibility to public in
+the repository's package settings if anonymous pulls are needed.
+
+Open `http://<server>:21114/` to sign in. Set `API_ADMIN_PASSWORD` (and
+optionally `API_ADMIN_USERNAME`) on the first start; if the password is omitted,
+a random one is printed once in `docker logs`. Port `21114` must be reachable by
+RustDesk clients because they use the API for heartbeat and configuration.
+
+The console also provides **browser remote control**: select a device and choose
+网页远控 to operate it without installing a client. The browser connects only to
+the API; the API proxies the RustDesk protocol to `hbbs`/`hbbr` inside the
+container. This feature needs HTTPS (WebCodecs is restricted to secure
+contexts), a current Chrome or Edge, and an `hbbs` key pair (the default).
+See the [web control notes](docs/environment-variables.md#browser-remote-control).
+
+All API variables are documented in
+[docs/environment-variables.md](docs/environment-variables.md#management-api--web-console-variables).
 
 ## Installation
 

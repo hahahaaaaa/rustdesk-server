@@ -48,18 +48,31 @@ async function parseResponse(response) {
   return data
 }
 
-export async function loginToServer({ baseUrl, username, password }) {
+export async function loginToServer({
+  baseUrl,
+  username,
+  password,
+  tfaCode = '',
+  tfaSecret = '',
+}) {
   const base = normalizeBaseUrl(baseUrl)
+  const payload = {
+    username,
+    password,
+    deviceInfo: { os: 'web', name: 'RustDesk 控制台', type: 'web' },
+  }
+  if (tfaCode) {
+    payload.type = 'email_code'
+    payload.verificationCode = tfaCode
+    payload.tfaCode = tfaCode
+    payload.secret = tfaSecret
+  }
   let response
   try {
     response = await fetch(`${base}/api/login`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        username,
-        password,
-        deviceInfo: { os: 'web', name: 'RustDesk 控制台', type: 'web' },
-      }),
+      body: JSON.stringify(payload),
     })
   } catch {
     throw new ApiError(
@@ -67,10 +80,18 @@ export async function loginToServer({ baseUrl, username, password }) {
     )
   }
   const data = await parseResponse(response)
-  if (!data?.access_token) {
-    if (data?.type === 'email_check' || data?.type === 'tfa_check') {
-      throw new ApiError('此账号需要两步验证，请改用访问令牌登录。')
+  if (
+    !data?.access_token &&
+    (data?.type === 'email_check' || data?.type === 'tfa_check')
+  ) {
+    return {
+      tfaRequired: true,
+      tfaType: data.tfa_type || 'totp',
+      challenge: data.secret || '',
+      user: data.user || null,
     }
+  }
+  if (!data?.access_token) {
     throw new ApiError(data?.error || '服务器未返回访问令牌。')
   }
   return {
@@ -148,6 +169,232 @@ export class ApiClient {
     return Array.isArray(data?.data) ? data.data : []
   }
 
+  createUser(payload) {
+    return this.request('/api/users', { method: 'POST', body: payload })
+  }
+
+  updateUser(id, payload) {
+    return this.request(`/api/users/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      body: payload,
+    })
+  }
+
+  deleteUser(id) {
+    return this.request(`/api/users/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    })
+  }
+
+  async getUserGroups(id) {
+    const data = await this.request(
+      `/api/users/${encodeURIComponent(id)}/device-groups`
+    )
+    return Array.isArray(data?.groups) ? data.groups : []
+  }
+
+  setUserGroups(id, groups) {
+    return this.request(`/api/users/${encodeURIComponent(id)}/device-groups`, {
+      method: 'PUT',
+      body: { groups },
+    })
+  }
+
+  async getTfaStatus() {
+    const data = await this.request('/api/2fa')
+    return { enabled: data?.enabled === true }
+  }
+
+  setupTfa() {
+    return this.request('/api/2fa/setup', { method: 'POST' })
+  }
+
+  enableTfa(code) {
+    return this.request('/api/2fa/enable', {
+      method: 'POST',
+      body: { code },
+    })
+  }
+
+  disableTfa({ password, code }) {
+    return this.request('/api/2fa/disable', {
+      method: 'POST',
+      body: { password, code },
+    })
+  }
+
+  resetUserTfa(id) {
+    return this.request(`/api/users/${encodeURIComponent(id)}/2fa/reset`, {
+      method: 'POST',
+    })
+  }
+
+  getAuditLogs({ current = 1, pageSize = 50, actor = '', action = '', q = '' } = {}) {
+    const params = new URLSearchParams({
+      current: String(current),
+      pageSize: String(pageSize),
+    })
+    if (actor.trim()) params.set('actor', actor.trim())
+    if (action.trim()) params.set('action', action.trim())
+    if (q.trim()) params.set('q', q.trim())
+    return this.request(`/api/audit?${params.toString()}`)
+  }
+
+  async getAuditActions() {
+    const data = await this.request('/api/audit/actions')
+    return Array.isArray(data?.actions) ? data.actions : []
+  }
+
+  async getAddressBooks({ q = '' } = {}) {
+    const pageSize = 100
+    const all = []
+    let current = 1
+    while (current <= 10) {
+      const params = new URLSearchParams({
+        current: String(current),
+        pageSize: String(pageSize),
+      })
+      if (q.trim()) params.set('q', q.trim())
+      const data = await this.request(`/api/address-books?${params.toString()}`)
+      const rows = Array.isArray(data?.data) ? data.data : []
+      all.push(...rows)
+      const total = Number(data?.total || all.length)
+      if (rows.length < pageSize || all.length >= total) break
+      current += 1
+    }
+    return all
+  }
+
+  createAddressBook(payload) {
+    return this.request('/api/address-books', { method: 'POST', body: payload })
+  }
+
+  updateAddressBook(guid, payload) {
+    return this.request(`/api/address-books/${encodeURIComponent(guid)}`, {
+      method: 'PATCH',
+      body: payload,
+    })
+  }
+
+  deleteAddressBook(guid) {
+    return this.request(`/api/address-books/${encodeURIComponent(guid)}`, {
+      method: 'DELETE',
+    })
+  }
+
+  async getStrategies() {
+    const data = await this.request('/api/strategies')
+    return Array.isArray(data) ? data : []
+  }
+
+  createStrategy(payload) {
+    return this.request('/api/strategies', { method: 'POST', body: payload })
+  }
+
+  updateStrategy(guid, payload) {
+    return this.request(`/api/strategies/${encodeURIComponent(guid)}`, {
+      method: 'PATCH',
+      body: payload,
+    })
+  }
+
+  deleteStrategy(guid) {
+    return this.request(`/api/strategies/${encodeURIComponent(guid)}`, {
+      method: 'DELETE',
+    })
+  }
+
+  setStrategyStatus(guid, enabled) {
+    return this.request(`/api/strategies/${encodeURIComponent(guid)}/status`, {
+      method: 'PUT',
+      body: { enabled },
+    })
+  }
+
+  async getStrategyAssignments(guid) {
+    const data = await this.request(
+      `/api/strategies/${encodeURIComponent(guid)}/assignments`
+    )
+    return {
+      devices: Array.isArray(data?.devices) ? data.devices : [],
+      users: Array.isArray(data?.users) ? data.users : [],
+      groups: Array.isArray(data?.groups) ? data.groups : [],
+    }
+  }
+
+  assignStrategy({ strategy = null, peers = [], users = [], groups = [] }) {
+    return this.request('/api/strategies/assign', {
+      method: 'POST',
+      body: {
+        strategy: strategy || null,
+        peers,
+        users,
+        groups,
+      },
+    })
+  }
+
+  async getAddressBookShares(guid) {
+    const data = await this.request(
+      `/api/address-books/${encodeURIComponent(guid)}/shares`
+    )
+    return Array.isArray(data?.shares) ? data.shares : []
+  }
+
+  setAddressBookShares(guid, shares) {
+    return this.request(
+      `/api/address-books/${encodeURIComponent(guid)}/shares`,
+      { method: 'PUT', body: { shares } }
+    )
+  }
+
+  async getAddressBookPeers(guid) {
+    const pageSize = 100
+    const all = []
+    let current = 1
+    while (current <= 20) {
+      const data = await this.request(
+        `/api/ab/peers?current=${current}&pageSize=${pageSize}&ab=${encodeURIComponent(guid)}`,
+        { method: 'POST' }
+      )
+      const rows = Array.isArray(data?.data) ? data.data : []
+      all.push(...rows)
+      const total = Number(data?.total || all.length)
+      if (rows.length < pageSize || all.length >= total) break
+      current += 1
+    }
+    return all
+  }
+
+  addAddressBookPeer(guid, payload) {
+    return this.request(`/api/ab/peer/add/${encodeURIComponent(guid)}`, {
+      method: 'POST',
+      body: payload,
+    })
+  }
+
+  deleteAddressBookPeer(guid, ids) {
+    return this.request(`/api/ab/peer/${encodeURIComponent(guid)}`, {
+      method: 'DELETE',
+      body: ids,
+    })
+  }
+
+  async getAddressBookTags(guid) {
+    const data = await this.request(
+      `/api/ab/tags/${encodeURIComponent(guid)}`,
+      { method: 'POST' }
+    )
+    return Array.isArray(data) ? data : []
+  }
+
+  addAddressBookTag(guid, payload) {
+    return this.request(`/api/ab/tag/add/${encodeURIComponent(guid)}`, {
+      method: 'POST',
+      body: payload,
+    })
+  }
+
   setDeviceDisabled(guid, disabled) {
     return this.request(`/api/devices/${encodeURIComponent(guid)}/${disabled ? 'disable' : 'enable'}`, {
       method: 'POST',
@@ -157,6 +404,13 @@ export class ApiClient {
   deleteDevice(guid) {
     return this.request(`/api/devices/${encodeURIComponent(guid)}`, {
       method: 'DELETE',
+    })
+  }
+
+  createWebControlSession(guid) {
+    return this.request('/api/web-control/session', {
+      method: 'POST',
+      body: { guid },
     })
   }
 
