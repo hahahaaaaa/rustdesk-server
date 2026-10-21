@@ -333,6 +333,46 @@ async fn check_cmd(cmd: &str, limiter: Limiter) -> String {
     res
 }
 
+fn is_console_command(data: &[u8]) -> bool {
+    if data.is_empty()
+        || !data
+            .iter()
+            .all(|byte| byte.is_ascii_graphic() || matches!(byte, b' ' | b'\r' | b'\n' | b'\t'))
+    {
+        return false;
+    }
+    let Ok(text) = std::str::from_utf8(data) else {
+        return false;
+    };
+    matches!(
+        text.split_whitespace().next().unwrap_or_default(),
+        "h" | "blacklist-add"
+            | "ba"
+            | "blacklist-remove"
+            | "br"
+            | "blacklist"
+            | "b"
+            | "blocklist-add"
+            | "Ba"
+            | "blocklist-remove"
+            | "Br"
+            | "blocklist"
+            | "B"
+            | "downgrade-threshold"
+            | "dt"
+            | "downgrade-start-check"
+            | "t"
+            | "limit-speed"
+            | "ls"
+            | "total-bandwidth"
+            | "tb"
+            | "single-bandwidth"
+            | "sb"
+            | "usage"
+            | "u"
+    )
+}
+
 async fn io_loop(
     listener: TcpListener,
     listener2: TcpListener,
@@ -392,16 +432,29 @@ async fn handle_connection(
 ) {
     let ip = hbb_common::try_into_v4(addr).ip();
     if !ws && ip.is_loopback() {
+        let key = key.to_owned();
         let limiter = limiter.clone();
         tokio::spawn(async move {
             let mut stream = stream;
             let mut buffer = [0; 1024];
-            if let Ok(Ok(n)) = timeout(1000, stream.read(&mut buffer[..])).await {
-                if let Ok(data) = std::str::from_utf8(&buffer[..n]) {
+            // A loopback TCP connection can be the runtime console or a relay
+            // client such as the web console's local relay proxy. Inspect the
+            // first bytes without consuming them so binary RustDesk frames
+            // fall through to the relay path instead of being closed by the
+            // console handler.
+            let console = match timeout(1000, stream.peek(&mut buffer[..])).await {
+                Ok(Ok(n)) if n > 0 => is_console_command(&buffer[..n]),
+                _ => false,
+            };
+            if console {
+                if let Ok(Ok(n)) = timeout(1000, stream.read(&mut buffer[..])).await {
+                    let data = std::str::from_utf8(&buffer[..n]).unwrap_or_default();
                     let res = check_cmd(data, limiter).await;
                     stream.write(res.as_bytes()).await.ok();
                 }
+                return;
             }
+            allow_err!(make_pair(stream, addr, &key, limiter, ws).await);
         });
         return;
     }
@@ -680,4 +733,25 @@ impl StreamTrait for tokio_tungstenite::WebSocketStream<TcpStream> {
     }
 
     fn set_raw(&mut self) {}
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_console_command;
+
+    #[test]
+    fn accepts_runtime_console_commands() {
+        assert!(is_console_command(b"h"));
+        assert!(is_console_command(b"usage"));
+        assert!(is_console_command(b"ba 1.2.3.4\n"));
+        assert!(is_console_command(b"ls 10"));
+    }
+
+    #[test]
+    fn rejects_binary_relay_frames() {
+        assert!(!is_console_command(b""));
+        assert!(!is_console_command(&[0x7d, 0x01, 0x22, 0x0a]));
+        assert!(!is_console_command(&[0x62, 0x22]));
+        assert!(!is_console_command(b"hello"));
+    }
 }
