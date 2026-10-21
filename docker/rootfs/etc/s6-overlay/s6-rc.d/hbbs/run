@@ -1,6 +1,9 @@
 #!/command/with-contenv sh
 sleep 2
 cd /data
-PARAMS=
-[ "${ENCRYPTED_ONLY}" = "1" ] && PARAMS="-k _"
-/usr/bin/hbbs -r $RELAY $PARAMS
+set --
+# RELAY is optional: clients derive the relay address from the ID server
+# host, so the all-in-one image needs no address configuration.
+[ -n "${RELAY}" ] && set -- -r "${RELAY}"
+[ "${ENCRYPTED_ONLY}" = "1" ] && set -- "$@" -k _
+exec /usr/bin/hbbs "$@"

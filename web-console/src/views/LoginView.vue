@@ -13,7 +13,6 @@ import {
   ApiClient,
   ApiError,
   loginToServer,
-  normalizeBaseUrl,
   startDemoSession,
 } from '../lib/api'
 import { saveSession } from '../lib/session'
@@ -21,12 +20,7 @@ import { saveSession } from '../lib/session'
 const route = useRoute()
 const router = useRouter()
 
-const DEFAULT_SERVER = 'https://desktop.voltmonkey.com.cn'
-
 const mode = ref('password')
-const server = ref(
-  localStorage.getItem('rd-console-last-server') || DEFAULT_SERVER
-)
 const username = ref('')
 const password = ref('')
 const token = ref('')
@@ -41,7 +35,6 @@ const tfaCode = ref('')
 const tfaStep = computed(() => Boolean(tfaChallenge.value))
 
 const canSubmit = computed(() => {
-  if (!server.value.trim()) return false
   if (mode.value === 'password') {
     return Boolean(username.value.trim() && password.value)
   }
@@ -64,8 +57,7 @@ async function signIn() {
   busy.value = true
   error.value = ''
   try {
-    const baseUrl = normalizeBaseUrl(server.value)
-    localStorage.setItem('rd-console-last-server', baseUrl)
+    const baseUrl = window.location.origin
     if (mode.value === 'password') {
       const result = await loginToServer({
         baseUrl,
@@ -81,7 +73,6 @@ async function signIn() {
         return
       }
       saveSession({
-        baseUrl,
         token: result.token,
         user: result.user,
         demo: false,
@@ -90,7 +81,6 @@ async function signIn() {
       const client = new ApiClient(baseUrl, token.value.trim())
       await client.testConnection()
       saveSession({
-        baseUrl,
         token: token.value.trim(),
         demo: false,
         user: {
@@ -118,7 +108,7 @@ async function verifyCode() {
   busy.value = true
   error.value = ''
   try {
-    const baseUrl = normalizeBaseUrl(server.value)
+    const baseUrl = window.location.origin
     const result = await loginToServer({
       baseUrl,
       username: username.value.trim(),
@@ -132,7 +122,6 @@ async function verifyCode() {
       return
     }
     saveSession({
-      baseUrl,
       token: result.token,
       user: result.user,
       demo: false,
@@ -175,7 +164,7 @@ function switchMode(next) {
       </div>
 
       <div class="login-hero">
-        <div class="mono-label">RustDesk Server Pro</div>
+        <div class="mono-label">RustDesk 自托管服务</div>
         <h1 class="login-title">
           管理整个设备集群，<br />
           <span class="quiet">一切从容有序。</span>
@@ -209,7 +198,7 @@ function switchMode(next) {
       <div class="login-card">
         <h1>登录</h1>
         <p class="sub">
-          连接到你的 RustDesk Server Pro 实例管理 API。
+          使用管理员账号登录当前 RustDesk 服务，无需填写服务器地址。
         </p>
 
         <form class="login-form" @submit.prevent="signIn">
@@ -268,17 +257,6 @@ function switchMode(next) {
           </template>
 
           <template v-else>
-            <div class="field">
-              <label class="label" for="server">服务器地址</label>
-              <input
-                id="server"
-                v-model="server"
-                class="input"
-                autocomplete="url"
-                placeholder="https://rd.example.com:21114"
-              />
-            </div>
-
             <template v-if="mode === 'password'">
               <div class="field">
                 <label class="label" for="username">用户名</label>
@@ -373,8 +351,7 @@ function switchMode(next) {
               }}
             </button>
             <br /><br />
-            凭据会从当前浏览器直接发送到你的 RustDesk 服务器。如果控制台部署在其他域名下，服务器需要通过
-            CORS 允许该来源。会话令牌仅保存在当前浏览器中。
+            登录凭据只会发送到当前访问的服务器，会话令牌保存在当前浏览器中。
           </p>
         </template>
       </div>

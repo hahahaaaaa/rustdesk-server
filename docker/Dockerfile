@@ -12,7 +12,6 @@ RUN \
 
 COPY rootfs /
 
-ENV RELAY=relay.example.com
 ENV ENCRYPTED_ONLY=0
 ENV API_PORT=21114
 ENV API_DB_PATH=/data/api.sqlite3

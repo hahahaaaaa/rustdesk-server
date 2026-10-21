@@ -11,18 +11,26 @@ function readStored() {
 }
 
 const stored = readStored()
+const origin = typeof window === 'undefined' ? '' : window.location.origin
+const storedOrigin = String(stored?.baseUrl || '').replace(/\/+$/, '')
+// Older versions allowed signing in to a remote server. Drop such sessions so
+// a stale token is never sent to the console's own origin.
+const sameService =
+  stored?.demo === true || !storedOrigin || storedOrigin === origin
 
+// The console is served by the same service as the API, so the current origin
+// is always authoritative.
 export const session = reactive({
-  baseUrl: stored?.baseUrl || '',
-  token: stored?.token || '',
-  user: stored?.user || null,
+  baseUrl: stored?.demo === true ? 'demo://local' : origin,
+  token: sameService ? stored?.token || '' : '',
+  user: sameService ? stored?.user || null : null,
   demo: stored?.demo === true,
 })
 
 export const isAuthenticated = computed(() => Boolean(session.token))
 
-export function saveSession({ baseUrl, token, user, demo = false }) {
-  session.baseUrl = baseUrl
+export function saveSession({ token, user, demo = false }) {
+  session.baseUrl = demo ? 'demo://local' : origin
   session.token = token
   session.user = user
   session.demo = demo

@@ -184,7 +184,7 @@ handled by its service scripts, **not** by `hbbs`/`hbbr` directly:
 
 | Variable | Default | Description |
 |---|---|---|
-| `RELAY` | `relay.example.com` | Passed to `hbbs` as `-r $RELAY` (your public address). |
+| `RELAY` | *(unset)* | Optional relay address passed to `hbbs` as `-r`. Leave it unset for the all-in-one image: clients derive the relay from the ID server host and the standard port `21117`. Set it only when the relay is reachable at a different address or port. |
 | `ENCRYPTED_ONLY` | `0` | `1` adds `-k _` to both servers. This is redundant for `hbbs`, whose default is `-`, and opts `hbbr` into key validation instead of its intentional empty default. |
 | `KEY_PUB` | *(unset)* | If set, written to `/data/id_ed25519.pub` on first start. |
 | `KEY_PRIV` | *(unset)* | If set, written to `/data/id_ed25519` on first start. Provide **both** `KEY_PUB` and `KEY_PRIV`, or neither. |
@@ -196,7 +196,12 @@ container's environment (e.g. `-e ALWAYS_USE_RELAY=Y`, `-e RUST_LOG=debug`).
 
 The same s6 image runs `rustdesk-api` on port `21114` and serves the browser
 console from `/usr/share/rustdesk-console`. The API stores its data in
-`/data/api.sqlite3` and reads the following variables:
+`/data/api.sqlite3` and reads the following variables.
+
+No server addresses are required for the bundled deployment: the console signs
+in against its own origin, and the API proxies browser remote control to the
+local `hbbs`/`hbbr` services. The address variables below are advanced
+overrides for split or reverse-proxied deployments.
 
 | Variable | Default | Description |
 |---|---|---|
@@ -305,7 +310,6 @@ services:
   rustdesk-server:
     image: ghcr.io/hahahaaaaa/rustdesk-server:latest
     environment:
-      - RELAY=rustdesk.example.com:21117
       - ALWAYS_USE_RELAY=Y
       - RUST_LOG=info
       - SINGLE_BANDWIDTH=256

@@ -70,12 +70,15 @@ bandwidth tuning, Docker image variables, and examples.
 The s6 supervisor image built by the "Docker image" workflow bundles `hbbs`,
 `hbbr`, `rustdesk-api`, and the browser console. It keeps the server keys and
 the API database in `/data`. All components run in this single container; no
-separate API or console image is published. The multi-arch image is published
-to GitHub Container Registry as `ghcr.io/hahahaaaaa/rustdesk-server:latest`
-(`linux/amd64`, `linux/arm64`, `linux/arm/v7`):
+separate API or console image is published, and no server addresses need to be
+configured: the console always uses the address it was opened with, and
+RustDesk clients derive the relay from the ID server host. The multi-arch image
+is published to GitHub Container Registry as
+`ghcr.io/hahahaaaaa/rustdesk-server:latest` (`linux/amd64`, `linux/arm64`,
+`linux/arm/v7`):
 
 ```bash
-# Edit RELAY and API_ADMIN_PASSWORD first.
+# Set API_ADMIN_PASSWORD before the first start.
 docker compose up -d
 ```
 
@@ -84,7 +87,9 @@ switch the package to private in its GitHub package settings, run
 `docker login ghcr.io` first with a personal access token that has
 `read:packages`.
 
-Open `http://<server>:21114/` to sign in. Set `API_ADMIN_PASSWORD` (and
+Open `http://<server>:21114/` to sign in with the administrator account; the
+console authenticates against its own origin, so there is no server address
+field. Set `API_ADMIN_PASSWORD` (and
 optionally `API_ADMIN_USERNAME`) on the first start; if the password is omitted,
 a random one is printed once in `docker logs`. Port `21114` must be reachable by
 RustDesk clients because they use the API for heartbeat and configuration.

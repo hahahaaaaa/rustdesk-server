@@ -10,8 +10,7 @@ export class ApiError extends Error {
 }
 
 export function normalizeBaseUrl(value) {
-  let url = String(value || '').trim()
-  if (!url) throw new ApiError('请填写服务器地址。')
+  let url = String(value || '').trim() || window.location.origin
   if (!/^https?:\/\//i.test(url)) {
     const protocol = window.location.protocol === 'http:' ? 'http:' : 'https:'
     url = `${protocol}//${url}`
@@ -20,7 +19,7 @@ export function normalizeBaseUrl(value) {
   try {
     new URL(url)
   } catch {
-    throw new ApiError('请输入有效的服务器地址，例如 https://rd.example.com:21114。')
+    throw new ApiError('服务器地址无效。')
   }
   return url
 }
@@ -75,9 +74,7 @@ export async function loginToServer({
       body: JSON.stringify(payload),
     })
   } catch {
-    throw new ApiError(
-      '无法连接服务器。请检查地址、协议和 API 端口；如果服务器正常，可能需要通过 CORS 允许当前来源。'
-    )
+    throw new ApiError('无法连接服务器，请确认 RustDesk 服务正在运行。')
   }
   const data = await parseResponse(response)
   if (
@@ -454,13 +451,12 @@ export function getApi() {
     if (!demoClient) demoClient = new DemoApi()
     return demoClient
   }
-  return new ApiClient(session.baseUrl, session.token)
+  return new ApiClient(session.baseUrl || window.location.origin, session.token)
 }
 
 export function startDemoSession() {
   demoClient = null
   saveSession({
-    baseUrl: 'demo://local',
     token: 'demo',
     demo: true,
     user: {

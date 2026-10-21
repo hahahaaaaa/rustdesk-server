@@ -135,7 +135,7 @@ function logout() {
           <div class="page-eyebrow">系统</div>
           <h1 class="page-title">设置</h1>
           <p class="page-sub">
-            查看当前控制台的连接信息，并配置网页远程控制等选项。
+            查看一体化服务的运行信息与账号安全设置。
           </p>
         </div>
       </div>
@@ -144,9 +144,9 @@ function logout() {
         <section class="settings-card">
           <div class="section-head">
             <div>
-              <h3>连接</h3>
+              <h3>服务</h3>
               <p class="desc">
-                控制台会从当前浏览器直接访问 RustDesk Server Pro 的管理 API。
+                控制台、管理 API 与 RustDesk ID/中继服务运行在同一实例中，自动使用当前访问地址，无需填写服务器地址。
               </p>
             </div>
             <Server :size="16" class="faint" />
@@ -154,14 +154,14 @@ function logout() {
 
           <dl class="detail-list">
             <div class="detail-row">
-              <dt>服务器</dt>
+              <dt>访问地址</dt>
               <dd class="mono" style="font-size: 11.5px">
                 {{ session.demo ? 'demo://local' : session.baseUrl }}
               </dd>
             </div>
             <div class="detail-row">
               <dt>模式</dt>
-              <dd>{{ session.demo ? '本地演示工作区' : '在线服务器' }}</dd>
+              <dd>{{ session.demo ? '本地演示工作区' : '一体化服务' }}</dd>
             </div>
             <div class="detail-row">
               <dt>账号</dt>
@@ -306,7 +306,7 @@ function logout() {
             <div>
               <h3>API 接口</h3>
               <p class="desc">
-                控制台使用以下 RustDesk Server Pro 接口，所有操作都会遵循当前账号的权限。
+                控制台使用以下内置接口，所有操作都会遵循当前账号的权限。
               </p>
             </div>
           </div>
