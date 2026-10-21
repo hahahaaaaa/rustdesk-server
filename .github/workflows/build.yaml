@@ -82,10 +82,10 @@ jobs:
           key: ${{ matrix.target }}
 
       - name: Build hbbs, hbbr and rustdesk-utils
-        run: cross build --release --target ${{ matrix.target }} --bin hbbs --bin hbbr --bin rustdesk-utils
+        run: cross build --locked --release --target ${{ matrix.target }} --bin hbbs --bin hbbr --bin rustdesk-utils
 
       - name: Build management API
-        run: cross build --release --target ${{ matrix.target }} --manifest-path api/Cargo.toml --target-dir target
+        run: cross build --locked --release --target ${{ matrix.target }} --manifest-path api/Cargo.toml --target-dir target
 
       - name: Upload binaries
         uses: actions/upload-artifact@v4

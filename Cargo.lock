@@ -1017,7 +1017,7 @@ dependencies = [
  "digest",
  "elliptic-curve",
  "rfc6979",
- "signature",
+ "signature 2.2.0",
  "spki",
 ]
 
