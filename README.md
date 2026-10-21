@@ -69,8 +69,9 @@ bandwidth tuning, Docker image variables, and examples.
 
 The s6 supervisor image built by the "Docker image" workflow bundles `hbbs`,
 `hbbr`, `rustdesk-api`, and the browser console. It keeps the server keys and
-the API database in `/data`. The multi-arch image is published to GitHub
-Container Registry as `ghcr.io/hahahaaaaa/rustdesk-server:latest`
+the API database in `/data`. All components run in this single container; no
+separate API or console image is published. The multi-arch image is published
+to GitHub Container Registry as `ghcr.io/hahahaaaaa/rustdesk-server:latest`
 (`linux/amd64`, `linux/arm64`, `linux/arm/v7`):
 
 ```bash
