@@ -1,0 +1,24 @@
+[package]
+name = "rustdesk-api"
+version = "0.1.0"
+edition = "2021"
+description = "Management API and web console backend for RustDesk Server"
+
+[workspace]
+
+[dependencies]
+axum = "0.8"
+base64 = "0.22"
+bcrypt = "0.17"
+chrono = "0.4"
+jsonwebtoken = "9"
+rand = "0.8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "macros"] }
+thiserror = "2"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal", "time"] }
+tower-http = { version = "0.6", features = ["cors", "fs", "trace"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+uuid = { version = "1", features = ["v4"] }
