@@ -396,5 +396,7 @@ ExecStart=/usr/bin/hbbs
 | 21118 | TCP | hbbs | WebSocket rendezvous (`PORT+2`) |
 | 21119 | TCP | hbbr | WebSocket relay (`hbbr PORT+2`) |
 
-Ports 21118/21119 are only needed for the web client; you can omit them
-otherwise.
+Ports 21118/21119 are needed by the web client and by native clients that
+enable **Use WebSocket** (for example behind a reverse proxy); you can omit
+them otherwise. Native WebSocket clients register, stay online, and receive
+hole-punch/relay messages over the same connection.
