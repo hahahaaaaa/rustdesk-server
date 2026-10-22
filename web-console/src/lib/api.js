@@ -1,5 +1,4 @@
-import { session, saveSession } from './session'
-import { DemoApi } from './demo'
+import { session } from './session'
 
 export class ApiError extends Error {
   constructor(message, status = 0) {
@@ -444,26 +443,6 @@ export class ApiClient {
   }
 }
 
-let demoClient = null
-
 export function getApi() {
-  if (session.demo) {
-    if (!demoClient) demoClient = new DemoApi()
-    return demoClient
-  }
   return new ApiClient(session.baseUrl || window.location.origin, session.token)
-}
-
-export function startDemoSession() {
-  demoClient = null
-  saveSession({
-    token: 'demo',
-    demo: true,
-    user: {
-      name: 'demo',
-      display_name: '演示管理员',
-      email: 'demo@rustdesk.local',
-      is_admin: true,
-    },
-  })
 }

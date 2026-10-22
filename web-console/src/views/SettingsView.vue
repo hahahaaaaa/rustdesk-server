@@ -3,14 +3,12 @@ import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import {
   CheckCircle2,
-  Database,
   LogOut,
   RefreshCw,
   Server,
   ShieldCheck,
 } from 'lucide-vue-next'
 import AppShell from '../components/AppShell.vue'
-import ConfirmDialog from '../components/ConfirmDialog.vue'
 import TfaDisableModal from '../components/TfaDisableModal.vue'
 import TfaSetupModal from '../components/TfaSetupModal.vue'
 import { getApi } from '../lib/api'
@@ -27,8 +25,6 @@ const api = getApi()
 
 const testing = ref(false)
 const testResult = ref('')
-const resetOpen = ref(false)
-const resetBusy = ref(false)
 
 const tfa = ref({ enabled: false })
 const tfaLoading = ref(true)
@@ -108,19 +104,6 @@ async function testConnection() {
   }
 }
 
-async function resetDemo() {
-  resetBusy.value = true
-  try {
-    await api.reset()
-    notify('演示数据已恢复。')
-    resetOpen.value = false
-  } catch (e) {
-    notify(e.message || '无法重置演示工作区。', 'error')
-  } finally {
-    resetBusy.value = false
-  }
-}
-
 function logout() {
   clearSession()
   router.push('/login')
@@ -156,12 +139,12 @@ function logout() {
             <div class="detail-row">
               <dt>访问地址</dt>
               <dd class="mono" style="font-size: 11.5px">
-                {{ session.demo ? 'demo://local' : session.baseUrl }}
+                {{ session.baseUrl }}
               </dd>
             </div>
             <div class="detail-row">
               <dt>模式</dt>
-              <dd>{{ session.demo ? '本地演示工作区' : '一体化服务' }}</dd>
+              <dd>一体化服务</dd>
             </div>
             <div class="detail-row">
               <dt>账号</dt>
@@ -278,29 +261,6 @@ function logout() {
           </div>
         </section>
 
-        <section v-if="session.demo" class="settings-card">
-          <div class="section-head">
-            <div>
-              <h3>演示工作区</h3>
-              <p class="desc">
-                演示设备与分组保存在当前浏览器中，所有改动都只在本机生效，
-                不会上传到任何服务器。
-              </p>
-            </div>
-            <Database :size="16" class="faint" />
-          </div>
-          <div class="settings-actions">
-            <button
-              class="btn btn-secondary"
-              type="button"
-              @click="resetOpen = true"
-            >
-              <RefreshCw :size="14" />
-              恢复演示数据
-            </button>
-          </div>
-        </section>
-
         <section class="settings-card">
           <div class="section-head">
             <div>
@@ -353,16 +313,6 @@ function logout() {
       :error="tfaDisableError"
       @cancel="!tfaDisableBusy && (tfaDisableOpen = false)"
       @submit="disableTfa"
-    />
-
-    <ConfirmDialog
-      v-if="resetOpen"
-      title="恢复演示数据？"
-      message="你对演示设备和分组所做的改动都会被丢弃。"
-      confirm-label="恢复演示数据"
-      :busy="resetBusy"
-      @cancel="resetOpen = false"
-      @confirm="resetDemo"
     />
   </AppShell>
 </template>

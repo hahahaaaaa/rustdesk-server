@@ -35,9 +35,7 @@ watch(
 
 const crumb = computed(() => route.meta.crumb || '设备')
 const host = computed(() =>
-  session.demo
-    ? '演示工作区'
-    : String(session.baseUrl || '').replace(/^https?:\/\//, '')
+  String(session.baseUrl || '').replace(/^https?:\/\//, '')
 )
 
 function logout() {
@@ -141,9 +139,6 @@ function logout() {
           <span>控制台</span>
           <ChevronRight :size="12" />
           <strong>{{ crumb }}</strong>
-        </div>
-        <div class="topbar-right">
-          <span v-if="session.demo" class="demo-badge">演示数据</span>
         </div>
       </header>
 

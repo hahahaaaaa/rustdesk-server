@@ -1,4 +1,3 @@
-import { session } from './session'
 import { notify } from './toast'
 
 export function deviceId(device) {
@@ -39,10 +38,6 @@ export function openNativeControl(device) {
 }
 
 export async function openWebControl(device) {
-  if (session.demo) {
-    notify('演示模式不连接真实服务器，网页远控不可用。', 'error')
-    return false
-  }
   const path = webControlPath(device)
   if (!path) {
     notify('此设备缺少内部标识，无法打开网页远控。', 'error')

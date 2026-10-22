@@ -13,7 +13,6 @@ import {
   ApiClient,
   ApiError,
   loginToServer,
-  startDemoSession,
 } from '../lib/api'
 import { saveSession } from '../lib/session'
 
@@ -75,14 +74,12 @@ async function signIn() {
       saveSession({
         token: result.token,
         user: result.user,
-        demo: false,
       })
     } else {
       const client = new ApiClient(baseUrl, token.value.trim())
       await client.testConnection()
       saveSession({
         token: token.value.trim(),
-        demo: false,
         user: {
           name: 'api-token',
           display_name: 'API 令牌会话',
@@ -124,7 +121,6 @@ async function verifyCode() {
     saveSession({
       token: result.token,
       user: result.user,
-      demo: false,
     })
     finish()
   } catch (e) {
@@ -139,11 +135,6 @@ function cancelTfa() {
   tfaCode.value = ''
   tfaUser.value = null
   error.value = ''
-}
-
-function useDemo() {
-  startDemoSession()
-  finish()
 }
 
 function switchMode(next) {
@@ -325,17 +316,6 @@ function switchMode(next) {
         </form>
 
         <template v-if="!tfaStep">
-          <div class="login-divider">或</div>
-
-          <button
-            class="btn login-demo"
-            type="button"
-            :disabled="busy"
-            @click="useDemo"
-          >
-            体验演示控制台
-          </button>
-
           <p class="login-fine">
             <button
               class="btn btn-ghost btn-sm"

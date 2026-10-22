@@ -14,7 +14,6 @@ import {
   openNativeControl,
   openWebControl,
 } from '../lib/control'
-import { session } from '../lib/session'
 import { notify } from '../lib/toast'
 
 const props = defineProps({
@@ -26,9 +25,8 @@ const emit = defineEmits(['close'])
 const name = computed(() => deviceName(props.device))
 const state = computed(() => deviceState(props.device))
 const online = computed(() => state.value === 'online')
-const webReady = computed(() => !session.demo && online.value)
+const webReady = computed(() => online.value)
 const webHint = computed(() => {
-  if (session.demo) return '演示模式不连接真实服务器，网页远控不可用。'
   if (!online.value) return '设备离线或已禁用，无法发起网页远控。'
   return '在浏览器中直接操作远程桌面，无需安装额外客户端。'
 })

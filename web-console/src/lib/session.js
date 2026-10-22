@@ -13,34 +13,30 @@ function readStored() {
 const stored = readStored()
 const origin = typeof window === 'undefined' ? '' : window.location.origin
 const storedOrigin = String(stored?.baseUrl || '').replace(/\/+$/, '')
-// Older versions allowed signing in to a remote server. Drop such sessions so
-// a stale token is never sent to the console's own origin.
-const sameService =
-  stored?.demo === true || !storedOrigin || storedOrigin === origin
+// Older versions allowed signing in to a remote server or a local demo.
+// Drop such sessions so a stale token is never sent to this origin.
+const sameService = !storedOrigin || storedOrigin === origin
 
 // The console is served by the same service as the API, so the current origin
 // is always authoritative.
 export const session = reactive({
-  baseUrl: stored?.demo === true ? 'demo://local' : origin,
+  baseUrl: origin,
   token: sameService ? stored?.token || '' : '',
   user: sameService ? stored?.user || null : null,
-  demo: stored?.demo === true,
 })
 
 export const isAuthenticated = computed(() => Boolean(session.token))
 
-export function saveSession({ token, user, demo = false }) {
-  session.baseUrl = demo ? 'demo://local' : origin
+export function saveSession({ token, user }) {
+  session.baseUrl = origin
   session.token = token
   session.user = user
-  session.demo = demo
   localStorage.setItem(
     STORAGE_KEY,
     JSON.stringify({
       baseUrl: session.baseUrl,
       token: session.token,
       user: session.user,
-      demo: session.demo,
     })
   )
 }
@@ -49,7 +45,6 @@ export function clearSession() {
   session.baseUrl = ''
   session.token = ''
   session.user = null
-  session.demo = false
   localStorage.removeItem(STORAGE_KEY)
 }
 

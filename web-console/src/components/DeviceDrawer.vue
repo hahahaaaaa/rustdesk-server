@@ -28,7 +28,6 @@ import {
   osLabel,
   timeAgo,
 } from '../lib/format'
-import { session } from '../lib/session'
 import { notify } from '../lib/toast'
 
 const props = defineProps({
@@ -45,10 +44,9 @@ const name = computed(() => deviceName(props.device))
 const os = computed(() => deviceOs(props.device))
 const state = computed(() => deviceState(props.device))
 const online = computed(() => state.value === 'online')
-const webReady = computed(() => online.value && !session.demo)
+const webReady = computed(() => online.value)
 const controlHint = computed(() => {
   if (!online.value) return '设备离线或已禁用，无法发起远程控制。'
-  if (session.demo) return '演示模式不连接真实服务器，网页远控不可用。'
   return '网页远控会在本控制台中打开远程桌面，支持键盘、鼠标与剪贴板。'
 })
 
