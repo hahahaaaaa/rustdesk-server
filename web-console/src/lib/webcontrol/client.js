@@ -100,6 +100,8 @@ export class WebControlClient {
     this.peerPlatform = ''
     this.displays = []
     this.currentDisplay = 0
+    this.pendingDisplay = null
+    this.pendingDisplayTimer = 0
     this.quality = 3
     this.cursorCache = new Map()
     this.currentCursorId = ''
@@ -425,7 +427,14 @@ export class WebControlClient {
 
   handleVideoFrame(frame) {
     const display = Number(frame.display || 0)
-    if (display !== this.currentDisplay) {
+    if (this.pendingDisplay !== null) {
+      if (display !== this.pendingDisplay) {
+        // Stale frames from the previous display while the switch is in flight.
+        this.sendVideoAck()
+        return
+      }
+      this.clearPendingDisplay()
+    } else if (display !== this.currentDisplay) {
       this.currentDisplay = display
       this.emit('onDisplays', {
         displays: this.displays,
@@ -487,6 +496,7 @@ export class WebControlClient {
     }
     if (misc.switch_display) {
       const display = Number(misc.switch_display.display || 0)
+      this.clearPendingDisplay()
       this.currentDisplay = display
       this.decoder?.configure(0, 0)
       this.emit('onDisplays', {
@@ -647,12 +657,30 @@ export class WebControlClient {
     this.send({ misc: { option: { image_quality: value } } })
   }
 
+  clearPendingDisplay() {
+    this.pendingDisplay = null
+    if (this.pendingDisplayTimer) {
+      clearTimeout(this.pendingDisplayTimer)
+      this.pendingDisplayTimer = 0
+    }
+  }
+
   switchDisplay(index) {
     const value = Number(index)
     if (!Number.isInteger(value) || value < 0) return
     this.currentDisplay = value
+    this.pendingDisplay = value
     this.decoder?.configure(0, 0)
-    this.send({ misc: { message_query: { switch_display: value } } })
+    this.send({ misc: { switch_display: { display: value } } })
+    this.send({ misc: { capture_displays: { set: [value] } } })
+    clearTimeout(this.pendingDisplayTimer)
+    this.pendingDisplayTimer = setTimeout(() => {
+      this.pendingDisplayTimer = 0
+      if (this.pendingDisplay === value) {
+        this.pendingDisplay = null
+        this.requestKeyFrame()
+      }
+    }, 5000)
     this.emit('onDisplays', { displays: this.displays, current: value })
   }
 
@@ -898,6 +926,7 @@ export class WebControlClient {
 
   teardown() {
     this.releaseAllKeys()
+    this.clearPendingDisplay()
     if (this.moveFrame) {
       cancelAnimationFrame(this.moveFrame)
       this.moveFrame = 0
