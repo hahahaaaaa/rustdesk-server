@@ -20,6 +20,8 @@ pub struct Config {
     pub server_public_key: Option<String>,
     pub server_public_key_file: Option<PathBuf>,
     pub license_key: Option<String>,
+    pub recordings_dir: PathBuf,
+    pub hbbs_db_path: Option<PathBuf>,
 }
 
 impl Config {
@@ -86,11 +88,40 @@ impl Config {
                 .ok()
                 .map(|key| key.trim().to_owned())
                 .filter(|key| !key.is_empty()),
+            recordings_dir: env::var("API_RECORDINGS_DIR")
+                .ok()
+                .map(|dir| dir.trim().to_owned())
+                .filter(|dir| !dir.is_empty())
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from("/data/recordings")),
+            hbbs_db_path: env::var("API_HBBS_DB_PATH")
+                .ok()
+                .map(|path| path.trim().to_owned())
+                .filter(|path| !path.is_empty())
+                .map(PathBuf::from)
+                .or_else(|| {
+                    let default_path = Path::new("/data/db_v2.sqlite3");
+                    default_path
+                        .is_file()
+                        .then(|| default_path.to_path_buf())
+                }),
         }
     }
 
     pub fn token_ttl_seconds(&self) -> i64 {
         self.token_ttl_hours.clamp(1, 24 * 365) * 3600
+    }
+
+    /// hbbs exposes its runtime console on PORT-1, which is how the console
+    /// applies relay-server changes without restarting the container.
+    pub fn hbbs_console_addr(&self) -> String {
+        match self.rendezvous_addr.rsplit_once(':') {
+            Some((host, port)) => match port.parse::<u16>() {
+                Ok(port) => format!("{host}:{}", port.saturating_sub(1)),
+                Err(_) => "127.0.0.1:21115".to_owned(),
+            },
+            None => "127.0.0.1:21115".to_owned(),
+        }
     }
 
     pub fn allow_any_origin(&self) -> bool {

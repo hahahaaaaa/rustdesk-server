@@ -3,6 +3,8 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 
 const props = defineProps({
   user: { type: Object, default: null },
+  roles: { type: Array, default: () => [] },
+  canAssignRoles: { type: Boolean, default: false },
   self: { type: Boolean, default: false },
   busy: { type: Boolean, default: false },
   error: { type: String, default: '' },
@@ -17,7 +19,22 @@ const password = ref('')
 const note = ref(props.user?.note || '')
 const isAdmin = ref(props.user?.is_admin === true)
 const enabled = ref(props.user ? props.user.status === 1 : true)
+const selectedRoles = ref(
+  Array.isArray(props.user?.roles) ? [...props.user.roles] : []
+)
+const emailVerification = ref(
+  Boolean(props.user?.info?.email_verification)
+)
+const emailAlarmNotification = ref(
+  Boolean(props.user?.info?.email_alarm_notification)
+)
 const localError = ref('')
+
+function toggleRole(name) {
+  const index = selectedRoles.value.indexOf(name)
+  if (index >= 0) selectedRoles.value.splice(index, 1)
+  else selectedRoles.value.push(name)
+}
 
 const isEdit = computed(() => Boolean(props.user))
 
@@ -37,7 +54,12 @@ function submit() {
     display_name: displayName.value.trim(),
     email: email.value.trim(),
     note: note.value.trim(),
-    is_admin: isAdmin.value,
+    email_verification: emailVerification.value,
+    email_alarm_notification: emailAlarmNotification.value,
+  }
+  if (props.canAssignRoles) {
+    payload.is_admin = isAdmin.value
+    payload.roles = [...selectedRoles.value]
   }
   if (isEdit.value) {
     if (password.value) payload.password = password.value
@@ -135,11 +157,46 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
             maxlength="240"
           />
         </div>
-        <label class="check-row">
+        <div v-if="canAssignRoles && roles.length" class="field" style="margin-top: 14px">
+          <span class="label">
+            管理员角色 <span class="hint">可多选，决定该账号在控制台中的权限</span>
+          </span>
+          <div class="role-picker">
+            <label v-for="role in roles" :key="role.guid" class="role-option">
+              <input
+                type="checkbox"
+                :checked="selectedRoles.includes(role.name)"
+                @change="toggleRole(role.name)"
+              />
+              <span class="role-option-body">
+                <span class="role-option-name">{{ role.name }}</span>
+                <small v-if="role.note">{{ role.note }}</small>
+              </span>
+            </label>
+          </div>
+          <p class="role-hint">
+            未分配角色时，账号仅拥有普通用户权限。修改角色会立即生效。
+          </p>
+        </div>
+        <label v-if="canAssignRoles" class="check-row">
           <input v-model="isAdmin" type="checkbox" :disabled="self" />
           <span>
             管理员权限
             <small>{{ self ? '不能取消当前登录账号的管理员权限。' : '可以管理全部设备、用户与分组。' }}</small>
+          </span>
+        </label>
+        <label class="check-row">
+          <input v-model="emailVerification" type="checkbox" />
+          <span>
+            邮箱验证 <span class="hint">可选</span>
+            <small>开启后登录需要输入发送到该邮箱的验证码，请先填写邮箱并确保 SMTP 已配置。</small>
+          </span>
+        </label>
+        <label class="check-row">
+          <input v-model="emailAlarmNotification" type="checkbox" />
+          <span>
+            告警邮件 <span class="hint">可选</span>
+            <small>管理员账号开启后，发生安全告警时向该邮箱发送通知邮件。</small>
           </span>
         </label>
         <label v-if="isEdit" class="check-row">
@@ -176,6 +233,71 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
 </template>
 
 <style scoped>
+.modal {
+  max-height: calc(100vh - 40px);
+  display: flex;
+  flex-direction: column;
+}
+
+.modal-body {
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+.role-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 168px;
+  overflow-y: auto;
+  padding: 8px;
+  border-radius: var(--radius-sm);
+  background: var(--wash);
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+
+.role-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 5px 6px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.role-option:hover {
+  background: #fff;
+}
+
+.role-option input {
+  margin-top: 2px;
+  accent-color: var(--ink);
+}
+
+.role-option-body {
+  min-width: 0;
+}
+
+.role-option-name {
+  display: block;
+  font-size: 12.5px;
+  color: var(--ink);
+}
+
+.role-option small {
+  display: block;
+  margin-top: 1px;
+  font-size: 11px;
+  color: var(--faint);
+}
+
+.role-hint {
+  margin: 6px 0 0;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--faint);
+}
+
 .readonly-value {
   height: 36px;
   display: flex;

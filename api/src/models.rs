@@ -90,6 +90,12 @@ pub struct UserCreateRequest {
     pub note: String,
     #[serde(default)]
     pub is_admin: bool,
+    #[serde(default)]
+    pub email_verification: Option<bool>,
+    #[serde(default)]
+    pub email_alarm_notification: Option<bool>,
+    #[serde(default)]
+    pub roles: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -106,6 +112,12 @@ pub struct UserUpdateRequest {
     pub status: Option<i64>,
     #[serde(default)]
     pub is_admin: Option<bool>,
+    #[serde(default)]
+    pub email_verification: Option<bool>,
+    #[serde(default)]
+    pub email_alarm_notification: Option<bool>,
+    #[serde(default)]
+    pub roles: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -169,6 +181,11 @@ pub struct UserRow {
     pub is_admin: i64,
     pub totp_secret: String,
     pub totp_enabled: i64,
+    pub email_verification: i64,
+    pub email_alarm_notification: i64,
+    pub email_verified: i64,
+    pub ldap_dn: String,
+    pub oidc_subject: String,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -202,6 +219,17 @@ pub struct GroupRow {
 }
 
 pub fn user_json(row: &UserRow) -> Value {
+    user_json_with(row, &[], &[])
+}
+
+pub fn user_json_with(row: &UserRow, permissions: &[String], roles: &[String]) -> Value {
+    let third_auth_type = if !row.oidc_subject.is_empty() {
+        Value::String("oidc".to_owned())
+    } else if !row.ldap_dn.is_empty() {
+        Value::String("ldap".to_owned())
+    } else {
+        Value::Null
+    };
     json!({
         "id": row.id,
         "name": row.username,
@@ -212,13 +240,16 @@ pub fn user_json(row: &UserRow) -> Value {
         "status": row.status,
         "is_admin": row.is_admin != 0,
         "tfa_enabled": row.totp_enabled != 0,
+        "permissions": permissions,
+        "roles": roles,
         "info": {
-            "email_verification": false,
-            "email_alarm_notification": false,
+            "email_verification": row.email_verification != 0,
+            "email_alarm_notification": row.email_alarm_notification != 0,
+            "email_verified": row.email_verified != 0,
             "login_device_whitelist": [],
             "other": {}
         },
-        "third_auth_type": Value::Null,
+        "third_auth_type": third_auth_type,
         "verifier": "",
         "created_at": iso_from_secs(Some(row.created_at)),
         "updated_at": iso_from_secs(Some(row.updated_at)),

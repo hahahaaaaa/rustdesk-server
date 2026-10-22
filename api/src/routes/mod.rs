@@ -3,12 +3,21 @@ mod audit;
 mod auth;
 mod client;
 mod console;
+mod deploy;
+mod logs;
+mod oidc;
+mod records;
+mod relays;
+mod roles;
+mod settings_ext;
 mod strategies;
+mod switch_grant;
 mod tfa;
 mod users;
 mod webcontrol;
 
 use axum::{
+    extract::DefaultBodyLimit,
     http::{HeaderValue, StatusCode},
     routing::{delete, get, patch, post, put},
     Json, Router,
@@ -23,10 +32,86 @@ use crate::error::AppError;
 use crate::models::now_secs;
 use crate::AppState;
 
+pub fn spawn_background_tasks(state: AppState) {
+    relays::spawn_sync(state);
+}
+
 pub fn router(state: AppState) -> Router {
     let cors = build_cors(&state.cfg);
     let api = Router::new()
         .route("/api/health", get(health))
+        .route("/api/oidc/status", get(oidc::status))
+        .route("/api/oidc/auth", post(oidc::auth_start))
+        .route("/api/oidc/auth-query", get(oidc::auth_query))
+        .route("/api/oidc/callback", get(oidc::callback))
+        .route("/api/oidc/exchange", post(oidc::web_exchange))
+        .route("/api/switch-grant", post(switch_grant::register))
+        .route("/api/audit/conn", post(logs::ingest_conn))
+        .route("/api/audit/file", post(logs::ingest_file))
+        .route("/api/audit/alarm", post(logs::ingest_alarm))
+        .route("/api/audits/conn", get(logs::list_conn))
+        .route("/api/audits/file", get(logs::list_file))
+        .route("/api/audits/alarm", get(logs::list_alarm))
+        .route(
+            "/api/audits/{kind}/{id}",
+            patch(logs::update_note).delete(logs::delete_log),
+        )
+        .route(
+            "/api/record",
+            post(records::upload).layer(DefaultBodyLimit::max(64 * 1024 * 1024)),
+        )
+        .route("/api/recordings", get(records::list))
+        .route(
+            "/api/recordings/{filename}",
+            patch(records::update_note).delete(records::delete),
+        )
+        .route(
+            "/api/recordings/{filename}/download",
+            get(records::download),
+        )
+        .route(
+            "/api/devices/deploy",
+            post(deploy::deploy).layer(DefaultBodyLimit::max(64 * 1024)),
+        )
+        .route("/api/devices/cli", post(deploy::cli))
+        .route(
+            "/api/deployment/tokens",
+            get(deploy::list_tokens).post(deploy::create_token),
+        )
+        .route(
+            "/api/deployment/tokens/{id}",
+            patch(deploy::update_token).delete(deploy::delete_token),
+        )
+        .route(
+            "/api/relays",
+            get(relays::list).post(relays::create),
+        )
+        .route("/api/relays/sync", post(relays::sync))
+        .route(
+            "/api/relays/{guid}",
+            patch(relays::update).delete(relays::delete),
+        )
+        .route(
+            "/api/settings/oidc",
+            get(oidc::get_settings).put(oidc::save_settings),
+        )
+        .route("/api/settings/oidc/test", post(oidc::test_settings))
+        .route(
+            "/api/settings/smtp",
+            get(settings_ext::get_smtp).put(settings_ext::save_smtp),
+        )
+        .route("/api/settings/smtp/test", post(settings_ext::test_smtp))
+        .route(
+            "/api/settings/ldap",
+            get(settings_ext::get_ldap).put(settings_ext::save_ldap),
+        )
+        .route("/api/settings/ldap/test", post(settings_ext::test_ldap))
+        .route("/api/permissions", get(roles::list_permissions))
+        .route("/api/roles", get(roles::list).post(roles::create))
+        .route(
+            "/api/roles/{guid}",
+            patch(roles::update).delete(roles::delete),
+        )
         .route("/api/web-control/session", post(webcontrol::session))
         .route("/api/web-control/ws", get(webcontrol::ws_proxy))
         .route("/api/web-control/relay", get(webcontrol::relay_proxy))

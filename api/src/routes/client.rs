@@ -10,12 +10,13 @@ use sqlx::{QueryBuilder, Sqlite};
 use crate::auth::AuthUser;
 use crate::error::AppError;
 use crate::models::{
-    group_json, now_secs, peer_json, user_json, DeviceRow, GroupRow, HeartbeatRequest, PageQuery,
-    UserRow,
+    group_json, now_secs, peer_json, user_json_with, DeviceRow, GroupRow, HeartbeatRequest,
+    PageQuery, UserRow,
 };
+use crate::rbac;
 use crate::AppState;
 
-const USER_COLUMNS: &str = "u.id, u.username, u.display_name, u.password_hash, u.email, u.note, u.avatar, u.status, u.is_admin, u.totp_secret, u.totp_enabled, u.created_at, u.updated_at";
+const USER_COLUMNS: &str = "u.id, u.username, u.display_name, u.password_hash, u.email, u.note, u.avatar, u.status, u.is_admin, u.totp_secret, u.totp_enabled, u.email_verification, u.email_alarm_notification, u.email_verified, u.ldap_dn, u.oidc_subject, u.created_at, u.updated_at";
 
 pub async fn heartbeat(
     State(state): State<AppState>,
@@ -249,7 +250,16 @@ pub async fn list_users(
         .fetch_all(&state.db)
         .await?;
 
-    let data: Vec<Value> = rows.iter().map(user_json).collect();
+    let mut data: Vec<Value> = Vec::with_capacity(rows.len());
+    for row in &rows {
+        let permissions = rbac::load_permissions(&state.db, row.id, row.is_admin != 0).await?;
+        let roles: Vec<String> = rbac::load_roles(&state.db, row.id)
+            .await?
+            .into_iter()
+            .map(|(_, name)| name)
+            .collect();
+        data.push(user_json_with(row, &permissions, &roles));
+    }
     Ok(Json(json!({ "total": total, "data": data })))
 }
 
@@ -343,7 +353,11 @@ pub(super) async fn query_groups(
 
 fn push_device_scope(qb: &mut QueryBuilder<'_, Sqlite>, auth: &AuthUser, enabled_only: bool) {
     qb.push(" AND (");
-    qb.push_bind(if auth.is_admin { 1_i64 } else { 0_i64 });
+    qb.push_bind(if auth.is_admin || auth.can("device.all") {
+        1_i64
+    } else {
+        0_i64
+    });
     qb.push(" = 1 OR d.user = ");
     qb.push_bind(auth.username.clone());
     qb.push(
@@ -357,7 +371,7 @@ fn push_device_scope(qb: &mut QueryBuilder<'_, Sqlite>, auth: &AuthUser, enabled
 }
 
 fn push_user_scope(qb: &mut QueryBuilder<'_, Sqlite>, auth: &AuthUser, status: Option<i64>) {
-    if !auth.is_admin {
+    if !auth.is_admin && !auth.can("user.read") {
         qb.push(" AND u.id = ");
         qb.push_bind(auth.id);
     }

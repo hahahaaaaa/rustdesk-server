@@ -15,7 +15,7 @@ use crate::AppState;
 
 const ISSUER: &str = "RustDesk Server";
 const MAX_CHALLENGE_ATTEMPTS: i64 = 5;
-const USER_COLUMNS: &str = "id, username, display_name, password_hash, email, note, avatar, status, is_admin, totp_secret, totp_enabled, created_at, updated_at";
+const USER_COLUMNS: &str = "id, username, display_name, password_hash, email, note, avatar, status, is_admin, totp_secret, totp_enabled, email_verification, email_alarm_notification, email_verified, ldap_dn, oidc_subject, created_at, updated_at";
 
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct CodeRequest {

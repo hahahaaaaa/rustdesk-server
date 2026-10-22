@@ -217,6 +217,8 @@ overrides for split or reverse-proxied deployments.
 | `API_AB_MAX_PEERS` | `0` | Maximum peers per address book (`0` = unlimited). |
 | `API_RENDEZVOUS_ADDR` | `127.0.0.1:21116` | `hbbs` TCP address used by browser remote control. |
 | `API_RELAY_ADDR` | `127.0.0.1:21117` | `hbbr` TCP address used by browser remote control. |
+| `API_RECORDINGS_DIR` | `/data/recordings` | Where RustDesk session recordings uploaded by clients are stored. Keep it on the `/data` volume. |
+| `API_HBBS_DB_PATH` | `/data/db_v2.sqlite3` | Path to the hbbs SQLite database. Used read-only to look up peer public keys for switch-grant requests. |
 | `API_SERVER_PUBLIC_KEY` | *(auto)* | `hbbs` public key used to verify the peer identity signature. Normally read from `/data/id_ed25519.pub` (or next to the API database). |
 | `API_SERVER_PUBLIC_KEY_FILE` | *(auto)* | Path to the `id_ed25519.pub` file when it is not next to the API database or in `/data`. |
 | `API_LICENSE_KEY` | server public key | Key sent to `hbbs`/`hbbr` in remote-control requests. Leave empty for the default key-pair mode; set it only when both servers are started with a custom `-k` value. |
@@ -269,6 +271,51 @@ required):
   }
   ```
 
+
+### Pro-equivalent administration features
+
+The console implements the commonly used RustDesk Server Pro administration
+surface:
+
+* **Audit logs** — Connection, file-transfer, and alarm events posted by clients
+  to `/api/audit/conn`, `/api/audit/file`, and `/api/audit/alarm` are listed
+  under **连接与文件日志**, with filters, notes, deletion, and CSV export.
+  Duplicate posts are deduplicated by nonce.
+* **Device deployment** — Create tokens under **客户端部署** and run
+  `rustdesk --deploy --token <token>` or
+  `rustdesk --assign --token <token> --user_name <name>` on the target machine.
+  The bundled `/api/devices/deploy` and `/api/devices/cli` endpoints validate
+  the token and apply the requested ID, user, strategy, address book, group,
+  note, and device name.
+* **Session recordings** — Clients upload recordings to `/api/record` in
+  `new`/`part`/`tail` chunks. Files are stored in `API_RECORDINGS_DIR` and can
+  be streamed in the console; downloads support HTTP range requests.
+* **Relay servers** — Manage relay addresses under **中继服务器**. Changes are
+  pushed to `hbbs` through its runtime console (`PORT-1`, default `21115`) with
+  the `relay-servers host1,host2` command; the built-in `hbbr` remains the
+  local fallback unless explicitly replaced.
+* **OIDC / LDAP / SMTP** — Configure single sign-on, directory login, and mail
+  under **身份与邮件**. OIDC supports web console login; LDAP supports LDAPS;
+  SMTP is used for email-code login, email verification, and alarm mail.
+* **Admin roles** — Create roles with granular permissions (devices, users,
+  groups, address books, strategies, audit, recordings, relays, deployment,
+  settings) under **管理员角色**, and assign them while editing a user. Full
+  administrators always have every permission. Write or manage permissions
+  imply the matching read permission (for example `user.write` grants
+  `user.read`), so custom roles can see the pages they manage. Only full
+  administrators can create, change, or delete roles, change administrator
+  accounts, or reassign a user's roles; a role that only has `user.write` can
+  edit ordinary users but not administrators or role assignments. The console
+  list pages fall back to card layouts on narrow screens.
+* **Switch grant** — `/api/switch-grant` verifies a device-signed grant using
+  the peer public key from the `hbbs` database (`API_HBBS_DB_PATH`), enabling
+  the client-side switch/elevation flow.
+
+The endpoints that receive client traffic (`/api/audit/*`, `/api/record`,
+`/api/switch-grant`, `/api/devices/deploy`, `/api/devices/cli`) authenticate
+with deployment tokens or device signatures rather than console sessions, as
+required by the open client protocol. Restrict port `21114` to trusted
+networks when anonymous audit or recording uploads are not acceptable.
 
 When `API_ADMIN_PASSWORD` is not set and the database is new, retrieve the
 generated password from the log:

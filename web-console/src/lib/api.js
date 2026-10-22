@@ -46,6 +46,21 @@ async function parseResponse(response) {
   return data
 }
 
+export function mapUser(raw, fallbackName = '') {
+  const user = raw || {}
+  return {
+    id: user.id ?? null,
+    name: user.name || fallbackName,
+    display_name: user.display_name || user.name || fallbackName,
+    email: user.email || '',
+    is_admin: user.is_admin === true,
+    permissions: Array.isArray(user.permissions) ? user.permissions : [],
+    roles: Array.isArray(user.roles) ? user.roles : [],
+    info: user.info || {},
+    third_auth_type: user.third_auth_type || null,
+  }
+}
+
 export async function loginToServer({
   baseUrl,
   username,
@@ -92,12 +107,7 @@ export async function loginToServer({
   }
   return {
     token: data.access_token,
-    user: {
-      name: data.user?.name || username,
-      display_name: data.user?.display_name || data.user?.name || username,
-      email: data.user?.email || '',
-      is_admin: data.user?.is_admin === true,
-    },
+    user: mapUser(data.user, username),
   }
 }
 
@@ -437,6 +447,229 @@ export class ApiClient {
     })
   }
 
+  getCurrentUser() {
+    return this.request('/api/currentUser', { method: 'POST', body: {} })
+  }
+
+  async getConnLogs({
+    current = 1,
+    pageSize = 50,
+    device = '',
+    remote = '',
+    connType = '',
+    q = '',
+  } = {}) {
+    const params = new URLSearchParams({
+      current: String(current),
+      pageSize: String(pageSize),
+    })
+    if (device.trim()) params.set('device', device.trim())
+    if (remote.trim()) params.set('remote', remote.trim())
+    if (connType !== '') params.set('connType', String(connType))
+    if (q.trim()) params.set('q', q.trim())
+    return this.request(`/api/audits/conn?${params.toString()}`)
+  }
+
+  async getFileLogs({
+    current = 1,
+    pageSize = 50,
+    device = '',
+    remote = '',
+    q = '',
+  } = {}) {
+    const params = new URLSearchParams({
+      current: String(current),
+      pageSize: String(pageSize),
+    })
+    if (device.trim()) params.set('device', device.trim())
+    if (remote.trim()) params.set('remote', remote.trim())
+    if (q.trim()) params.set('q', q.trim())
+    return this.request(`/api/audits/file?${params.toString()}`)
+  }
+
+  async getAlarmLogs({
+    current = 1,
+    pageSize = 50,
+    device = '',
+    alarmType = '',
+    q = '',
+  } = {}) {
+    const params = new URLSearchParams({
+      current: String(current),
+      pageSize: String(pageSize),
+    })
+    if (device.trim()) params.set('device', device.trim())
+    if (alarmType !== '') params.set('alarmType', String(alarmType))
+    if (q.trim()) params.set('q', q.trim())
+    return this.request(`/api/audits/alarm?${params.toString()}`)
+  }
+
+  updateLogNote(kind, id, note) {
+    return this.request(`/api/audits/${encodeURIComponent(kind)}/${id}`, {
+      method: 'PATCH',
+      body: { note },
+    })
+  }
+
+  deleteLog(kind, id) {
+    return this.request(`/api/audits/${encodeURIComponent(kind)}/${id}`, {
+      method: 'DELETE',
+    })
+  }
+
+  async getDeploymentTokens() {
+    const data = await this.request('/api/deployment/tokens')
+    return Array.isArray(data?.data) ? data.data : []
+  }
+
+  createDeploymentToken(name) {
+    return this.request('/api/deployment/tokens', {
+      method: 'POST',
+      body: { name },
+    })
+  }
+
+  updateDeploymentToken(id, payload) {
+    return this.request(`/api/deployment/tokens/${id}`, {
+      method: 'PATCH',
+      body: payload,
+    })
+  }
+
+  deleteDeploymentToken(id) {
+    return this.request(`/api/deployment/tokens/${id}`, { method: 'DELETE' })
+  }
+
+  async getRecordings({
+    current = 1,
+    pageSize = 30,
+    q = '',
+    device = '',
+    complete = null,
+  } = {}) {
+    const params = new URLSearchParams({
+      current: String(current),
+      pageSize: String(pageSize),
+    })
+    if (q.trim()) params.set('q', q.trim())
+    if (device.trim()) params.set('device', device.trim())
+    if (complete !== null) params.set('complete', complete ? '1' : '0')
+    return this.request(`/api/recordings?${params.toString()}`)
+  }
+
+  updateRecordingNote(filename, note) {
+    return this.request(`/api/recordings/${encodeURIComponent(filename)}`, {
+      method: 'PATCH',
+      body: { note },
+    })
+  }
+
+  deleteRecording(filename) {
+    return this.request(`/api/recordings/${encodeURIComponent(filename)}`, {
+      method: 'DELETE',
+    })
+  }
+
+  recordingDownloadUrl(filename) {
+    return `${this.baseUrl}/api/recordings/${encodeURIComponent(
+      filename
+    )}/download?token=${encodeURIComponent(this.token)}`
+  }
+
+  async getRelays() {
+    return this.request('/api/relays')
+  }
+
+  createRelay(payload) {
+    return this.request('/api/relays', { method: 'POST', body: payload })
+  }
+
+  updateRelay(guid, payload) {
+    return this.request(`/api/relays/${encodeURIComponent(guid)}`, {
+      method: 'PATCH',
+      body: payload,
+    })
+  }
+
+  deleteRelay(guid) {
+    return this.request(`/api/relays/${encodeURIComponent(guid)}`, {
+      method: 'DELETE',
+    })
+  }
+
+  syncRelays() {
+    return this.request('/api/relays/sync', { method: 'POST' })
+  }
+
+  getOidcSettings() {
+    return this.request('/api/settings/oidc')
+  }
+
+  saveOidcSettings(payload) {
+    return this.request('/api/settings/oidc', { method: 'PUT', body: payload })
+  }
+
+  testOidc() {
+    return this.request('/api/settings/oidc/test', { method: 'POST' })
+  }
+
+  getSmtpSettings() {
+    return this.request('/api/settings/smtp')
+  }
+
+  saveSmtpSettings(payload) {
+    return this.request('/api/settings/smtp', { method: 'PUT', body: payload })
+  }
+
+  testSmtp(to, settings) {
+    return this.request('/api/settings/smtp/test', {
+      method: 'POST',
+      body: { to, ...settings },
+    })
+  }
+
+  getLdapSettings() {
+    return this.request('/api/settings/ldap')
+  }
+
+  saveLdapSettings(payload) {
+    return this.request('/api/settings/ldap', { method: 'PUT', body: payload })
+  }
+
+  testLdap(username, password, settings) {
+    return this.request('/api/settings/ldap/test', {
+      method: 'POST',
+      body: { username, password, ...settings },
+    })
+  }
+
+  async getPermissions() {
+    const data = await this.request('/api/permissions')
+    return Array.isArray(data?.data) ? data.data : []
+  }
+
+  async getRoles() {
+    const data = await this.request('/api/roles')
+    return Array.isArray(data?.data) ? data.data : []
+  }
+
+  createRole(payload) {
+    return this.request('/api/roles', { method: 'POST', body: payload })
+  }
+
+  updateRole(guid, payload) {
+    return this.request(`/api/roles/${encodeURIComponent(guid)}`, {
+      method: 'PATCH',
+      body: payload,
+    })
+  }
+
+  deleteRole(guid) {
+    return this.request(`/api/roles/${encodeURIComponent(guid)}`, {
+      method: 'DELETE',
+    })
+  }
+
   async testConnection() {
     await this.request('/api/devices?pageSize=1&current=1')
     return true
@@ -445,4 +678,56 @@ export class ApiClient {
 
 export function getApi() {
   return new ApiClient(session.baseUrl || window.location.origin, session.token)
+}
+
+export async function getOidcStatus() {
+  let response
+  try {
+    response = await fetch(`${window.location.origin}/api/oidc/status`, {
+      headers: { Accept: 'application/json' },
+    })
+  } catch {
+    return { enabled: false, name: '' }
+  }
+  const data = await parseResponse(response)
+  return { enabled: data?.enabled === true, name: data?.name || '单点登录' }
+}
+
+export async function startOidcLogin() {
+  const base = window.location.origin
+  let response
+  try {
+    response = await fetch(`${base}/api/oidc/auth`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        op: 'web',
+        id: '',
+        uuid: '',
+        deviceInfo: { os: 'web', name: 'RustDesk 控制台', type: 'web' },
+        apiDomain: base,
+      }),
+    })
+  } catch {
+    throw new ApiError('无法连接服务器，请稍后重试。')
+  }
+  const data = await parseResponse(response)
+  if (!data?.url) throw new ApiError('服务器未返回单点登录地址。')
+  return data.url
+}
+
+export async function exchangeOidcCode(code) {
+  let response
+  try {
+    response = await fetch(`${window.location.origin}/api/oidc/exchange`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code }),
+    })
+  } catch {
+    throw new ApiError('无法连接服务器，请稍后重试。')
+  }
+  const data = await parseResponse(response)
+  if (!data?.access_token) throw new ApiError('单点登录未返回访问令牌。')
+  return { token: data.access_token, user: mapUser(data.user) }
 }

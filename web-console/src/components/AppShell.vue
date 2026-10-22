@@ -4,17 +4,22 @@ import { useRoute, useRouter } from 'vue-router'
 import {
   BookOpen,
   ChevronRight,
+  KeyRound,
   LogOut,
   Menu,
   MonitorSmartphone,
+  Network,
+  Rocket,
   ScrollText,
   Settings,
   ShieldCheck,
   UserCog,
   Users,
+  Video,
   Wifi,
 } from 'lucide-vue-next'
 import {
+  can,
   clearSession,
   displayName,
   session,
@@ -62,39 +67,76 @@ function logout() {
           <MonitorSmartphone :size="16" />
           设备
         </RouterLink>
-        <RouterLink class="nav-link" to="/groups">
+        <RouterLink v-if="can('group.read')" class="nav-link" to="/groups">
           <Users :size="16" />
           分组
         </RouterLink>
         <RouterLink
-          v-if="session.user?.is_admin"
+          v-if="can('address_book.read')"
           class="nav-link"
           to="/address-books"
         >
           <BookOpen :size="16" />
           地址簿
         </RouterLink>
-        <div class="nav-label">系统</div>
-        <RouterLink v-if="session.user?.is_admin" class="nav-link" to="/users">
+
+        <div class="nav-label">安全与合规</div>
+        <RouterLink v-if="can('user.read')" class="nav-link" to="/users">
           <UserCog :size="16" />
           用户
         </RouterLink>
+        <RouterLink v-if="can('role.manage')" class="nav-link" to="/roles">
+          <ShieldCheck :size="16" />
+          管理员角色
+        </RouterLink>
         <RouterLink
-          v-if="session.user?.is_admin"
+          v-if="can('strategy.read')"
           class="nav-link"
           to="/strategies"
         >
-          <ShieldCheck :size="16" />
+          <KeyRound :size="16" />
           策略
         </RouterLink>
-        <RouterLink
-          v-if="session.user?.is_admin"
-          class="nav-link"
-          to="/audit"
-        >
+        <RouterLink v-if="can('audit.read')" class="nav-link" to="/audit">
           <ScrollText :size="16" />
           审计日志
         </RouterLink>
+        <RouterLink v-if="can('audit.read')" class="nav-link" to="/logs">
+          <ScrollText :size="16" />
+          连接与文件日志
+        </RouterLink>
+
+        <div class="nav-label">运维</div>
+        <RouterLink
+          v-if="can('deployment.manage')"
+          class="nav-link"
+          to="/deployment"
+        >
+          <Rocket :size="16" />
+          客户端部署
+        </RouterLink>
+        <RouterLink
+          v-if="can('recording.read')"
+          class="nav-link"
+          to="/recordings"
+        >
+          <Video :size="16" />
+          会话录像
+        </RouterLink>
+        <RouterLink v-if="can('relay.manage')" class="nav-link" to="/relays">
+          <Network :size="16" />
+          中继服务器
+        </RouterLink>
+        <RouterLink
+          v-if="can('settings.read')"
+          class="nav-link"
+          to="/integrations"
+        >
+          <KeyRound :size="16" />
+          身份与邮件
+        </RouterLink>
+
+        <div class="nav-label">系统</div>
         <RouterLink class="nav-link" to="/settings">
           <Settings :size="16" />
           设置

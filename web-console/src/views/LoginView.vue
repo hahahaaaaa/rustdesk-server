@@ -1,5 +1,5 @@
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   ArrowRight,
@@ -7,12 +7,17 @@ import {
   Eye,
   EyeOff,
   KeyRound,
+  LogIn,
   ShieldCheck,
 } from 'lucide-vue-next'
 import {
   ApiClient,
   ApiError,
+  exchangeOidcCode,
+  getOidcStatus,
   loginToServer,
+  mapUser,
+  startOidcLogin,
 } from '../lib/api'
 import { saveSession } from '../lib/session'
 
@@ -27,11 +32,16 @@ const showPassword = ref(false)
 const busy = ref(false)
 const error = ref('')
 const tfaChallenge = ref('')
-const tfaType = ref('totp')
+const tfaType = ref('tfa_check')
 const tfaUser = ref(null)
 const tfaCode = ref('')
 
+const oidc = ref({ enabled: false, name: '单点登录' })
+const oidcBusy = ref(false)
+let oidcHandled = false
+
 const tfaStep = computed(() => Boolean(tfaChallenge.value))
+const emailStep = computed(() => tfaType.value === 'email_check')
 
 const canSubmit = computed(() => {
   if (mode.value === 'password') {
@@ -39,6 +49,58 @@ const canSubmit = computed(() => {
   }
   return Boolean(token.value.trim())
 })
+
+onMounted(async () => {
+  const oidcError =
+    typeof route.query.oidc_error === 'string' ? route.query.oidc_error : ''
+  const oidcCode =
+    typeof route.query.oidc_code === 'string' ? route.query.oidc_code : ''
+
+  if (oidcError) {
+    error.value = `单点登录失败：${oidcError}`
+  }
+  if (oidcCode) {
+    await completeOidc(oidcCode)
+    if (route.query.oidc_code || route.query.oidc_error) {
+      router.replace({
+        path: '/login',
+        query:
+          typeof route.query.redirect === 'string'
+            ? { redirect: route.query.redirect }
+            : {},
+      })
+    }
+    return
+  }
+  oidc.value = await getOidcStatus()
+})
+
+async function completeOidc(code) {
+  if (oidcHandled) return
+  oidcHandled = true
+  busy.value = true
+  try {
+    const result = await exchangeOidcCode(code)
+    saveSession(result)
+    finish()
+  } catch (e) {
+    error.value = e.message || '单点登录失败，请重试。'
+    busy.value = false
+  }
+}
+
+async function signInWithOidc() {
+  if (oidcBusy.value || busy.value) return
+  oidcBusy.value = true
+  error.value = ''
+  try {
+    const url = await startOidcLogin()
+    window.location.href = url
+  } catch (e) {
+    error.value = e.message || '无法发起单点登录。'
+    oidcBusy.value = false
+  }
+}
 
 function finish() {
   const redirect =
@@ -77,14 +139,10 @@ async function signIn() {
       })
     } else {
       const client = new ApiClient(baseUrl, token.value.trim())
-      await client.testConnection()
+      const me = await client.getCurrentUser()
       saveSession({
         token: token.value.trim(),
-        user: {
-          name: 'api-token',
-          display_name: 'API 令牌会话',
-          email: '',
-        },
+        user: mapUser(me, 'api-token'),
       })
     }
     finish()
@@ -115,6 +173,7 @@ async function verifyCode() {
     })
     if (result.tfaRequired) {
       tfaChallenge.value = result.challenge
+      tfaType.value = result.tfaType
       error.value = '验证码未通过，请重试。'
       return
     }
@@ -189,7 +248,7 @@ function switchMode(next) {
       <div class="login-card">
         <h1>登录</h1>
         <p class="sub">
-          使用管理员账号登录当前 RustDesk 服务，无需填写服务器地址。
+          使用账号登录当前 RustDesk 服务，无需填写服务器地址。
         </p>
 
         <form class="login-form" @submit.prevent="signIn">
@@ -197,11 +256,15 @@ function switchMode(next) {
             <div class="tfa-card">
               <div class="tfa-icon"><ShieldCheck :size="18" /></div>
               <div>
-                <h2>两步验证</h2>
+                <h2>{{ emailStep ? '邮箱验证' : '两步验证' }}</h2>
                 <p>
                   账号
                   <strong>{{ tfaUser?.name || username }}</strong>
-                  已启用双重认证，请打开身份验证器应用并输入当前的 6 位动态验证码。
+                  {{
+                    emailStep
+                      ? '需要通过邮箱验证，请查收邮件并输入邮件中的验证码。'
+                      : '已启用双重认证，请打开身份验证器应用并输入当前的 6 位动态验证码。'
+                  }}
                 </p>
               </div>
             </div>
@@ -209,7 +272,7 @@ function switchMode(next) {
             <div class="field">
               <label class="label" for="tfa-code">
                 验证码
-                <span class="hint">{{ tfaType === 'totp' ? '30 秒刷新一次' : '查收邮件或短信' }}</span>
+                <span class="hint">{{ emailStep ? '已发送到账号邮箱' : '30 秒刷新一次' }}</span>
               </label>
               <input
                 id="tfa-code"
@@ -312,6 +375,22 @@ function switchMode(next) {
                 <ArrowRight :size="15" />
               </template>
             </button>
+
+            <template v-if="mode === 'password' && oidc.enabled">
+              <div class="login-divider"><span>或</span></div>
+              <button
+                class="btn btn-secondary oidc-btn"
+                type="button"
+                :disabled="oidcBusy || busy"
+                @click="signInWithOidc"
+              >
+                <span v-if="oidcBusy" class="spinner-dark" />
+                <template v-else>
+                  <LogIn :size="15" />
+                  使用 {{ oidc.name }} 登录
+                </template>
+              </button>
+            </template>
           </template>
         </form>
 
@@ -393,6 +472,28 @@ function switchMode(next) {
 .tfa-back {
   width: 100%;
   margin-top: 8px;
+  justify-content: center;
+}
+
+.login-divider {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 12px 0;
+  color: var(--faint);
+  font-size: 11px;
+}
+
+.login-divider::before,
+.login-divider::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--line);
+}
+
+.oidc-btn {
+  width: 100%;
   justify-content: center;
 }
 </style>

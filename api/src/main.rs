@@ -3,8 +3,11 @@
 mod auth;
 mod config;
 mod db;
+mod directory;
 mod error;
+mod mailer;
 mod models;
+mod rbac;
 mod routes;
 mod totp;
 
@@ -32,6 +35,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         cfg: Arc::new(cfg),
         jwt_secret: Arc::new(jwt_secret),
     };
+    routes::spawn_background_tasks(state.clone());
 
     let bind = format!("{}:{}", state.cfg.bind, state.cfg.port);
     let addr: std::net::SocketAddr = bind

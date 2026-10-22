@@ -156,6 +156,135 @@ const SCHEMA: &[&str] = &[
         PRIMARY KEY (ab_guid, user_id)
     )",
     "CREATE INDEX IF NOT EXISTS idx_ab_shares_user ON ab_shares(user_id)",
+    "CREATE TABLE IF NOT EXISTS audit_nonces (
+        nonce TEXT PRIMARY KEY,
+        kind TEXT NOT NULL DEFAULT '',
+        created_at INTEGER NOT NULL
+    )",
+    "CREATE INDEX IF NOT EXISTS idx_audit_nonces_created ON audit_nonces(created_at)",
+    "CREATE TABLE IF NOT EXISTS conn_logs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        nonce TEXT NOT NULL UNIQUE,
+        device_id TEXT NOT NULL DEFAULT '',
+        device_uuid TEXT NOT NULL DEFAULT '',
+        peer_id TEXT NOT NULL DEFAULT '',
+        peer_name TEXT NOT NULL DEFAULT '',
+        conn_id INTEGER,
+        session_id INTEGER,
+        conn_type INTEGER NOT NULL DEFAULT 0,
+        primary_auth INTEGER NOT NULL DEFAULT 0,
+        two_factor INTEGER NOT NULL DEFAULT 0,
+        ip TEXT NOT NULL DEFAULT '',
+        action TEXT NOT NULL DEFAULT 'new',
+        conn_audit_ref TEXT NOT NULL DEFAULT '',
+        note TEXT NOT NULL DEFAULT '',
+        created_at INTEGER NOT NULL,
+        closed_at INTEGER
+    )",
+    "CREATE INDEX IF NOT EXISTS idx_conn_logs_created ON conn_logs(created_at)",
+    "CREATE INDEX IF NOT EXISTS idx_conn_logs_device ON conn_logs(device_id)",
+    "CREATE INDEX IF NOT EXISTS idx_conn_logs_ref ON conn_logs(conn_audit_ref)",
+    "CREATE TABLE IF NOT EXISTS file_logs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        nonce TEXT NOT NULL UNIQUE,
+        device_id TEXT NOT NULL DEFAULT '',
+        device_uuid TEXT NOT NULL DEFAULT '',
+        peer_id TEXT NOT NULL DEFAULT '',
+        conn_id INTEGER,
+        file_type INTEGER NOT NULL DEFAULT 0,
+        path TEXT NOT NULL DEFAULT '',
+        is_file INTEGER NOT NULL DEFAULT 0,
+        info TEXT NOT NULL DEFAULT '{}',
+        note TEXT NOT NULL DEFAULT '',
+        created_at INTEGER NOT NULL
+    )",
+    "CREATE INDEX IF NOT EXISTS idx_file_logs_created ON file_logs(created_at)",
+    "CREATE INDEX IF NOT EXISTS idx_file_logs_device ON file_logs(device_id)",
+    "CREATE TABLE IF NOT EXISTS alarm_logs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        nonce TEXT NOT NULL UNIQUE,
+        device_id TEXT NOT NULL DEFAULT '',
+        device_uuid TEXT NOT NULL DEFAULT '',
+        alarm_type INTEGER NOT NULL DEFAULT 0,
+        info TEXT NOT NULL DEFAULT '{}',
+        conn_id INTEGER,
+        conn_audit_ref TEXT NOT NULL DEFAULT '',
+        note TEXT NOT NULL DEFAULT '',
+        created_at INTEGER NOT NULL
+    )",
+    "CREATE INDEX IF NOT EXISTS idx_alarm_logs_created ON alarm_logs(created_at)",
+    "CREATE TABLE IF NOT EXISTS deployment_tokens (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL DEFAULT '',
+        token TEXT NOT NULL UNIQUE,
+        enabled INTEGER NOT NULL DEFAULT 1,
+        created_at INTEGER NOT NULL,
+        last_used_at INTEGER
+    )",
+    "CREATE TABLE IF NOT EXISTS recordings (
+        filename TEXT PRIMARY KEY,
+        size INTEGER NOT NULL DEFAULT 0,
+        complete INTEGER NOT NULL DEFAULT 0,
+        note TEXT NOT NULL DEFAULT '',
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+    )",
+    "CREATE TABLE IF NOT EXISTS oidc_sessions (
+        code TEXT PRIMARY KEY,
+        op TEXT NOT NULL DEFAULT '',
+        device_id TEXT NOT NULL DEFAULT '',
+        device_uuid TEXT NOT NULL DEFAULT '',
+        device_info TEXT NOT NULL DEFAULT '{}',
+        redirect_uri TEXT NOT NULL DEFAULT '',
+        username TEXT NOT NULL DEFAULT '',
+        error TEXT NOT NULL DEFAULT '',
+        authorized INTEGER NOT NULL DEFAULT 0,
+        consumed INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL
+    )",
+    "CREATE INDEX IF NOT EXISTS idx_oidc_sessions_exp ON oidc_sessions(expires_at)",
+    "CREATE TABLE IF NOT EXISTS email_challenges (
+        jti TEXT PRIMARY KEY,
+        username TEXT NOT NULL,
+        code TEXT NOT NULL,
+        attempts INTEGER NOT NULL DEFAULT 0,
+        expires_at INTEGER NOT NULL
+    )",
+    "CREATE INDEX IF NOT EXISTS idx_email_challenges_exp ON email_challenges(expires_at)",
+    "CREATE TABLE IF NOT EXISTS roles (
+        guid TEXT PRIMARY KEY,
+        name TEXT NOT NULL COLLATE NOCASE UNIQUE,
+        note TEXT NOT NULL DEFAULT '',
+        permissions TEXT NOT NULL DEFAULT '[]',
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+    )",
+    "CREATE TABLE IF NOT EXISTS user_roles (
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        role_guid TEXT NOT NULL REFERENCES roles(guid) ON DELETE CASCADE,
+        created_at INTEGER NOT NULL,
+        PRIMARY KEY (user_id, role_guid)
+    )",
+    "CREATE INDEX IF NOT EXISTS idx_user_roles_role ON user_roles(role_guid)",
+    "CREATE TABLE IF NOT EXISTS relay_servers (
+        guid TEXT PRIMARY KEY,
+        name TEXT NOT NULL DEFAULT '',
+        host TEXT NOT NULL,
+        port INTEGER NOT NULL DEFAULT 21117,
+        note TEXT NOT NULL DEFAULT '',
+        enabled INTEGER NOT NULL DEFAULT 1,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+    )",
+    "CREATE TABLE IF NOT EXISTS switch_grants (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        device_id TEXT NOT NULL,
+        verifier TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL,
+        UNIQUE(device_id, verifier)
+    )",
 ];
 
 pub async fn connect(path: &str) -> Result<SqlitePool, sqlx::Error> {
@@ -177,6 +306,33 @@ pub async fn init_schema(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     }
     ensure_column(pool, "users", "totp_secret", "TEXT NOT NULL DEFAULT ''").await?;
     ensure_column(pool, "users", "totp_enabled", "INTEGER NOT NULL DEFAULT 0").await?;
+    ensure_column(pool, "users", "email_verification", "INTEGER NOT NULL DEFAULT 0").await?;
+    ensure_column(pool, "users", "email_alarm_notification", "INTEGER NOT NULL DEFAULT 0").await?;
+    ensure_column(pool, "users", "email_verified", "INTEGER NOT NULL DEFAULT 0").await?;
+    ensure_column(pool, "users", "ldap_dn", "TEXT NOT NULL DEFAULT ''").await?;
+    ensure_column(pool, "users", "oidc_subject", "TEXT NOT NULL DEFAULT ''").await?;
+    execute_sql(pool, "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_oidc_subject ON users(oidc_subject) WHERE oidc_subject <> ''").await?;
+    Ok(())
+}
+
+async fn execute_sql(pool: &SqlitePool, sql: &str) -> Result<(), sqlx::Error> {
+    sqlx::query(sql).execute(pool).await?;
+    Ok(())
+}
+
+pub async fn get_setting(pool: &SqlitePool, key: &str) -> Result<Option<String>, sqlx::Error> {
+    sqlx::query_scalar("SELECT value FROM settings WHERE key = ?")
+        .bind(key)
+        .fetch_optional(pool)
+        .await
+}
+
+pub async fn set_setting(pool: &SqlitePool, key: &str, value: &str) -> Result<(), sqlx::Error> {
+    sqlx::query("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+        .bind(key)
+        .bind(value)
+        .execute(pool)
+        .await?;
     Ok(())
 }
 

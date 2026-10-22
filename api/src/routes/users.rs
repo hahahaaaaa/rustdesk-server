@@ -3,24 +3,29 @@ use axum::{
     Json,
 };
 use serde_json::{json, Value};
+use sqlx::Sqlite;
 
 use crate::auth::AuthUser;
 use crate::error::AppError;
 use crate::models::{
-    now_secs, user_json, UserCreateRequest, UserGroupsRequest, UserRow, UserUpdateRequest,
+    now_secs, user_json_with, UserCreateRequest, UserGroupsRequest, UserRow, UserUpdateRequest,
 };
+use crate::rbac;
 use crate::AppState;
 
-const USER_COLUMNS: &str = "id, username, display_name, password_hash, email, note, avatar, status, is_admin, totp_secret, totp_enabled, created_at, updated_at";
+const USER_COLUMNS: &str = "id, username, display_name, password_hash, email, note, avatar, status, is_admin, totp_secret, totp_enabled, email_verification, email_alarm_notification, email_verified, ldap_dn, oidc_subject, created_at, updated_at";
 
 pub async fn create_user(
     State(state): State<AppState>,
     auth: AuthUser,
     payload: Result<Json<UserCreateRequest>, JsonRejection>,
 ) -> Result<(axum::http::StatusCode, Json<Value>), AppError> {
-    require_admin(&auth)?;
+    require(&auth, "user.write")?;
     let Json(request) = payload
         .map_err(|err| AppError::BadRequest(format!("请求格式错误：{err}")))?;
+    if request.is_admin && !auth.is_admin {
+        return Err(AppError::Forbidden("只有管理员可以创建管理员账号。".to_owned()));
+    }
     let username = request.username.trim();
     validate_username(username)?;
     validate_password(&request.password)?;
@@ -45,10 +50,12 @@ pub async fn create_user(
     } else {
         display_name.to_owned()
     };
+    let mut tx = state.db.begin().await?;
     let result = sqlx::query(
         "INSERT INTO users
-            (username, display_name, password_hash, email, note, avatar, status, is_admin, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, '', 1, ?, ?, ?)",
+            (username, display_name, password_hash, email, note, avatar, status, is_admin,
+             email_verification, email_alarm_notification, email_verified, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, '', 1, ?, ?, ?, 0, ?, ?)",
     )
     .bind(username)
     .bind(&display_name)
@@ -56,9 +63,11 @@ pub async fn create_user(
     .bind(email)
     .bind(request.note.trim())
     .bind(if request.is_admin { 1 } else { 0 })
+    .bind(if request.email_verification.unwrap_or(false) { 1 } else { 0 })
+    .bind(if request.email_alarm_notification.unwrap_or(false) { 1 } else { 0 })
     .bind(now)
     .bind(now)
-    .execute(&state.db)
+    .execute(&mut *tx)
     .await;
     match result {
         Ok(_) => {}
@@ -68,9 +77,24 @@ pub async fn create_user(
         Err(err) => return Err(err.into()),
     }
 
+    let user_id: i64 = sqlx::query_scalar("SELECT id FROM users WHERE username = ?")
+        .bind(username)
+        .fetch_one(&mut *tx)
+        .await?;
+    if let Some(roles) = request.roles.as_ref() {
+        if !auth.is_admin && !roles.is_empty() {
+            return Err(AppError::Forbidden("只有管理员可以分配角色。".to_owned()));
+        }
+        set_roles(&mut tx, user_id, roles).await?;
+    }
+    tx.commit().await?;
+
     let user = load_user(&state, username).await?;
     super::audit(&state, &auth.username, "user.create", username, "").await;
-    Ok((axum::http::StatusCode::CREATED, Json(user_json(&user))))
+    Ok((
+        axum::http::StatusCode::CREATED,
+        Json(user_payload(&state, &user).await?),
+    ))
 }
 
 pub async fn update_user(
@@ -79,10 +103,15 @@ pub async fn update_user(
     Path(id): Path<i64>,
     payload: Result<Json<UserUpdateRequest>, JsonRejection>,
 ) -> Result<Json<Value>, AppError> {
-    require_admin(&auth)?;
+    require(&auth, "user.write")?;
     let Json(request) = payload
         .map_err(|err| AppError::BadRequest(format!("请求格式错误：{err}")))?;
     let current = load_user_by_id(&state, id).await?;
+    if current.is_admin != 0 && !auth.is_admin {
+        return Err(AppError::Forbidden(
+            "只有管理员可以修改管理员账号。".to_owned(),
+        ));
+    }
 
     if let Some(password) = request.password.as_deref() {
         if !password.is_empty() {
@@ -118,7 +147,7 @@ pub async fn update_user(
     if let Some(email) = request.email.as_deref() {
         let email = email.trim();
         check_text_len(email, 128, "邮箱过长。")?;
-        sqlx::query("UPDATE users SET email = ?, updated_at = ? WHERE id = ?")
+        sqlx::query("UPDATE users SET email = ?, email_verified = 0, updated_at = ? WHERE id = ?")
             .bind(email)
             .bind(now_secs())
             .bind(id)
@@ -135,6 +164,26 @@ pub async fn update_user(
             .bind(id)
             .execute(&state.db)
             .await?;
+    }
+
+    if let Some(flag) = request.email_verification {
+        sqlx::query("UPDATE users SET email_verification = ?, updated_at = ? WHERE id = ?")
+            .bind(if flag { 1 } else { 0 })
+            .bind(now_secs())
+            .bind(id)
+            .execute(&state.db)
+            .await?;
+    }
+
+    if let Some(flag) = request.email_alarm_notification {
+        sqlx::query(
+            "UPDATE users SET email_alarm_notification = ?, updated_at = ? WHERE id = ?",
+        )
+        .bind(if flag { 1 } else { 0 })
+        .bind(now_secs())
+        .bind(id)
+        .execute(&state.db)
+        .await?;
     }
 
     if let Some(status) = request.status {
@@ -156,6 +205,9 @@ pub async fn update_user(
     }
 
     if let Some(is_admin) = request.is_admin {
+        if !auth.is_admin {
+            return Err(AppError::Forbidden("只有管理员可以调整管理员权限。".to_owned()));
+        }
         if !is_admin && current.is_admin != 0 {
             if id == auth.id {
                 return Err(AppError::Forbidden("不能取消当前登录账号的管理员权限。".to_owned()));
@@ -170,9 +222,18 @@ pub async fn update_user(
             .await?;
     }
 
+    if let Some(roles) = request.roles.as_ref() {
+        if !auth.is_admin {
+            return Err(AppError::Forbidden("只有管理员可以分配角色。".to_owned()));
+        }
+        let mut tx = state.db.begin().await?;
+        set_roles(&mut tx, id, roles).await?;
+        tx.commit().await?;
+    }
+
     let user = load_user_by_id(&state, id).await?;
     super::audit(&state, &auth.username, "user.update", &user.username, "").await;
-    Ok(Json(user_json(&user)))
+    Ok(Json(user_payload(&state, &user).await?))
 }
 
 pub async fn delete_user(
@@ -180,12 +241,15 @@ pub async fn delete_user(
     auth: AuthUser,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    require_admin(&auth)?;
+    require(&auth, "user.write")?;
     if id == auth.id {
         return Err(AppError::Forbidden("不能删除当前登录的账号。".to_owned()));
     }
     let current = load_user_by_id(&state, id).await?;
     if current.is_admin != 0 {
+        if !auth.is_admin {
+            return Err(AppError::Forbidden("只有管理员可以删除管理员账号。".to_owned()));
+        }
         ensure_not_last_admin(&state, &current).await?;
     }
 
@@ -201,6 +265,10 @@ pub async fn delete_user(
         .execute(&mut *tx)
         .await?;
     sqlx::query("DELETE FROM user_device_groups WHERE user_id = ?")
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("DELETE FROM user_roles WHERE user_id = ?")
         .bind(id)
         .execute(&mut *tx)
         .await?;
@@ -231,7 +299,7 @@ pub async fn get_user_groups(
     auth: AuthUser,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    require_admin(&auth)?;
+    require(&auth, "user.read")?;
     load_user_by_id(&state, id).await?;
     let groups: Vec<String> = sqlx::query_scalar(
         "SELECT group_guid FROM user_device_groups WHERE user_id = ? ORDER BY group_guid",
@@ -248,10 +316,15 @@ pub async fn set_user_groups(
     Path(id): Path<i64>,
     payload: Result<Json<UserGroupsRequest>, JsonRejection>,
 ) -> Result<Json<Value>, AppError> {
-    require_admin(&auth)?;
+    require(&auth, "user.write")?;
     let Json(request) = payload
         .map_err(|err| AppError::BadRequest(format!("请求格式错误：{err}")))?;
     let current = load_user_by_id(&state, id).await?;
+    if current.is_admin != 0 && !auth.is_admin {
+        return Err(AppError::Forbidden(
+            "只有管理员可以修改管理员账号。".to_owned(),
+        ));
+    }
 
     let mut groups: Vec<String> = Vec::new();
     for group in request.groups {
@@ -298,6 +371,40 @@ pub async fn set_user_groups(
     Ok(Json(json!({ "success": true, "groups": groups })))
 }
 
+async fn set_roles(
+    tx: &mut sqlx::Transaction<'_, Sqlite>,
+    user_id: i64,
+    roles: &[String],
+) -> Result<(), AppError> {
+    let now = now_secs();
+    sqlx::query("DELETE FROM user_roles WHERE user_id = ?")
+        .bind(user_id)
+        .execute(&mut **tx)
+        .await?;
+    for role in roles {
+        let role = role.trim();
+        if role.is_empty() {
+            continue;
+        }
+        let guid: Option<String> =
+            sqlx::query_scalar("SELECT guid FROM roles WHERE guid = ? OR name = ? LIMIT 1")
+                .bind(role)
+                .bind(role)
+                .fetch_optional(&mut **tx)
+                .await?;
+        let guid = guid.ok_or_else(|| AppError::BadRequest(format!("角色不存在：{role}")))?;
+        sqlx::query(
+            "INSERT OR IGNORE INTO user_roles (user_id, role_guid, created_at) VALUES (?, ?, ?)",
+        )
+        .bind(user_id)
+        .bind(guid)
+        .bind(now)
+        .execute(&mut **tx)
+        .await?;
+    }
+    Ok(())
+}
+
 async fn load_user(state: &AppState, username: &str) -> Result<UserRow, AppError> {
     let sql = format!("SELECT {USER_COLUMNS} FROM users WHERE username = ?");
     sqlx::query_as::<_, UserRow>(&sql)
@@ -316,6 +423,16 @@ async fn load_user_by_id(state: &AppState, id: i64) -> Result<UserRow, AppError>
         .ok_or_else(|| AppError::NotFound("用户不存在。".to_owned()))
 }
 
+async fn user_payload(state: &AppState, user: &UserRow) -> Result<Value, AppError> {
+    let permissions = rbac::load_permissions(&state.db, user.id, user.is_admin != 0).await?;
+    let roles: Vec<String> = rbac::load_roles(&state.db, user.id)
+        .await?
+        .into_iter()
+        .map(|(_, name)| name)
+        .collect();
+    Ok(user_json_with(user, &permissions, &roles))
+}
+
 async fn ensure_not_last_admin(state: &AppState, target: &UserRow) -> Result<(), AppError> {
     if target.is_admin == 0 {
         return Ok(());
@@ -332,11 +449,11 @@ async fn ensure_not_last_admin(state: &AppState, target: &UserRow) -> Result<(),
     Ok(())
 }
 
-fn require_admin(auth: &AuthUser) -> Result<(), AppError> {
-    if auth.is_admin {
+fn require(auth: &AuthUser, permission: &str) -> Result<(), AppError> {
+    if auth.can(permission) {
         Ok(())
     } else {
-        Err(AppError::Forbidden("需要管理员权限。".to_owned()))
+        Err(AppError::Forbidden("没有权限执行此操作。".to_owned()))
     }
 }
 

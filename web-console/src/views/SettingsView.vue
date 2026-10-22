@@ -1,5 +1,5 @@
 <script setup>
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import {
   CheckCircle2,
@@ -36,6 +36,19 @@ const tfaSetupError = ref('')
 const tfaDisableOpen = ref(false)
 const tfaDisableBusy = ref(false)
 const tfaDisableError = ref('')
+
+const myRoles = computed(() =>
+  Array.isArray(session.user?.roles) ? session.user.roles : []
+)
+
+const permissionSummary = computed(() => {
+  if (session.user?.is_admin) return '全部权限（管理员）'
+  const list = Array.isArray(session.user?.permissions)
+    ? session.user.permissions
+    : []
+  if (!list.length) return '仅基础访问权限'
+  return `${list.length} 项权限`
+})
 
 onMounted(loadTfa)
 
@@ -157,7 +170,26 @@ function logout() {
             </div>
             <div class="detail-row">
               <dt>角色</dt>
-              <dd>{{ session.user?.is_admin ? '管理员' : '成员' }}</dd>
+              <dd>
+                <div class="role-list">
+                  <span v-if="session.user?.is_admin" class="tag tag-blue">
+                    管理员
+                  </span>
+                  <span v-for="role in myRoles" :key="role" class="tag">
+                    {{ role }}
+                  </span>
+                  <span
+                    v-if="!session.user?.is_admin && !myRoles.length"
+                    class="tag"
+                  >
+                    成员
+                  </span>
+                </div>
+              </dd>
+            </div>
+            <div class="detail-row">
+              <dt>权限</dt>
+              <dd>{{ permissionSummary }}</dd>
             </div>
           </dl>
 
@@ -316,3 +348,11 @@ function logout() {
     />
   </AppShell>
 </template>
+
+<style scoped>
+.role-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+</style>

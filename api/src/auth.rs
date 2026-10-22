@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::AppError;
 use crate::models::{now_secs, UserRow};
+use crate::rbac;
 use crate::AppState;
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -26,8 +27,15 @@ pub struct AuthUser {
     pub id: i64,
     pub username: String,
     pub is_admin: bool,
+    pub permissions: Vec<String>,
     pub jti: String,
     pub exp: i64,
+}
+
+impl AuthUser {
+    pub fn can(&self, permission: &str) -> bool {
+        self.is_admin || rbac::has(&self.permissions, permission)
+    }
 }
 
 pub fn create_token(state: &AppState, user: &UserRow) -> Result<String, AppError> {
@@ -72,16 +80,59 @@ pub fn create_tfa_challenge(
     Ok((token, claims))
 }
 
+pub fn create_email_challenge(
+    state: &AppState,
+    user: &UserRow,
+    ttl_secs: i64,
+) -> Result<(String, Claims), AppError> {
+    create_challenge(state, user, "email", ttl_secs)
+}
+
+fn create_challenge(
+    state: &AppState,
+    user: &UserRow,
+    purpose: &str,
+    ttl_secs: i64,
+) -> Result<(String, Claims), AppError> {
+    let issued_at = now_secs();
+    let claims = Claims {
+        sub: user.username.clone(),
+        uid: user.id,
+        adm: false,
+        jti: uuid::Uuid::new_v4().simple().to_string(),
+        iat: issued_at,
+        exp: issued_at + ttl_secs,
+        purpose: Some(purpose.to_owned()),
+    };
+    let token = encode(
+        &Header::default(),
+        &claims,
+        &EncodingKey::from_secret(state.jwt_secret.as_bytes()),
+    )
+    .map_err(|err| AppError::Internal(format!("failed to sign challenge: {err}")))?;
+    Ok((token, claims))
+}
+
 pub fn decode_tfa_challenge(state: &AppState, token: &str) -> Result<Claims, AppError> {
+    decode_challenge(state, token, "tfa").map_err(|_| {
+        AppError::Unauthorized("两步验证会话无效或已过期，请重新登录。".to_owned())
+    })
+}
+
+pub fn decode_challenge(
+    state: &AppState,
+    token: &str,
+    purpose: &str,
+) -> Result<Claims, AppError> {
     let token_data = decode::<Claims>(
         token,
         &DecodingKey::from_secret(state.jwt_secret.as_bytes()),
         &Validation::new(Algorithm::HS256),
     )
-    .map_err(|_| AppError::Unauthorized("两步验证会话无效或已过期，请重新登录。".to_owned()))?;
-    if token_data.claims.purpose.as_deref() != Some("tfa") {
+    .map_err(|_| AppError::Unauthorized("验证会话无效或已过期，请重新登录。".to_owned()))?;
+    if token_data.claims.purpose.as_deref() != Some(purpose) {
         return Err(AppError::Unauthorized(
-            "两步验证会话无效或已过期，请重新登录。".to_owned(),
+            "验证会话无效或已过期，请重新登录。".to_owned(),
         ));
     }
     Ok(token_data.claims)
@@ -101,6 +152,49 @@ pub async fn revoke_token(state: &AppState, jti: &str, exp: i64) -> Result<(), A
     Ok(())
 }
 
+pub async fn user_from_token(state: &AppState, token: &str) -> Result<AuthUser, AppError> {
+    let validation = Validation::new(Algorithm::HS256);
+    let token_data = decode::<Claims>(
+        token,
+        &DecodingKey::from_secret(state.jwt_secret.as_bytes()),
+        &validation,
+    )
+    .map_err(|_| AppError::Unauthorized("访问令牌无效或已过期。".to_owned()))?;
+    let claims = token_data.claims;
+    if claims.purpose.is_some() {
+        return Err(AppError::Unauthorized("访问令牌无效。".to_owned()));
+    }
+
+    let revoked: Option<i64> = sqlx::query_scalar("SELECT 1 FROM revoked_tokens WHERE jti = ?")
+        .bind(&claims.jti)
+        .fetch_optional(&state.db)
+        .await?;
+    if revoked.is_some() {
+        return Err(AppError::Unauthorized("访问令牌已失效。".to_owned()));
+    }
+
+    let user: Option<(i64, String, i64, i64)> =
+        sqlx::query_as("SELECT id, username, status, is_admin FROM users WHERE id = ?")
+            .bind(claims.uid)
+            .fetch_optional(&state.db)
+            .await?;
+    let (id, username, status, is_admin) =
+        user.ok_or_else(|| AppError::Unauthorized("账号不存在。".to_owned()))?;
+    if status != 1 {
+        return Err(AppError::Unauthorized("账号已被禁用。".to_owned()));
+    }
+    let permissions = rbac::load_permissions(&state.db, id, is_admin != 0).await?;
+
+    Ok(AuthUser {
+        id,
+        username,
+        is_admin: is_admin != 0,
+        permissions,
+        jti: claims.jti,
+        exp: claims.exp,
+    })
+}
+
 impl FromRequestParts<AppState> for AuthUser {
     type Rejection = AppError;
 
@@ -118,44 +212,6 @@ impl FromRequestParts<AppState> for AuthUser {
             .or_else(|| header.strip_prefix("bearer "))
             .ok_or_else(|| AppError::Unauthorized("访问令牌格式不正确。".to_owned()))?;
 
-        let validation = Validation::new(Algorithm::HS256);
-        let token_data = decode::<Claims>(
-            token,
-            &DecodingKey::from_secret(state.jwt_secret.as_bytes()),
-            &validation,
-        )
-        .map_err(|_| AppError::Unauthorized("访问令牌无效或已过期。".to_owned()))?;
-        let claims = token_data.claims;
-        if claims.purpose.is_some() {
-            return Err(AppError::Unauthorized("访问令牌无效。".to_owned()));
-        }
-
-        let revoked: Option<i64> =
-            sqlx::query_scalar("SELECT 1 FROM revoked_tokens WHERE jti = ?")
-                .bind(&claims.jti)
-                .fetch_optional(&state.db)
-                .await?;
-        if revoked.is_some() {
-            return Err(AppError::Unauthorized("访问令牌已失效。".to_owned()));
-        }
-
-        let user: Option<(i64, String, i64, i64)> =
-            sqlx::query_as("SELECT id, username, status, is_admin FROM users WHERE id = ?")
-                .bind(claims.uid)
-                .fetch_optional(&state.db)
-                .await?;
-        let (id, username, status, is_admin) =
-            user.ok_or_else(|| AppError::Unauthorized("账号不存在。".to_owned()))?;
-        if status != 1 {
-            return Err(AppError::Unauthorized("账号已被禁用。".to_owned()));
-        }
-
-        Ok(Self {
-            id,
-            username,
-            is_admin: is_admin != 0,
-            jti: claims.jti,
-            exp: claims.exp,
-        })
+        user_from_token(state, token).await
     }
 }

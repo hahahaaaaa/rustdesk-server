@@ -58,3 +58,14 @@ export function userHandle(user = session.user) {
   if (user.name && user.name !== user.display_name) return `@${user.name}`
   return user.email || user.name || ''
 }
+
+export function can(permission, user = session.user) {
+  if (!user) return false
+  if (user.is_admin === true) return true
+  const permissions = Array.isArray(user.permissions) ? user.permissions : []
+  return permissions.includes('*') || permissions.includes(permission)
+}
+
+export function hasAnyPermission(permissions, user = session.user) {
+  return permissions.some((permission) => can(permission, user))
+}

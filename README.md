@@ -101,6 +101,12 @@ container. This feature needs HTTPS (WebCodecs is restricted to secure
 contexts), a current Chrome or Edge, and an `hbbs` key pair (the default).
 See the [web control notes](docs/environment-variables.md#browser-remote-control).
 
+Additional Pro-equivalent administration is built in: connection/file/alarm
+audit logs with alarm mail, deployment tokens for `--deploy`/`--assign`, session
+recording upload and playback, multiple relay servers, OIDC/LDAP/SMTP
+configuration, email-code login, and role-based access control. See
+[Pro-equivalent administration features](docs/environment-variables.md#pro-equivalent-administration-features).
+
 All API variables are documented in
 [docs/environment-variables.md](docs/environment-variables.md#management-api--web-console-variables).
 

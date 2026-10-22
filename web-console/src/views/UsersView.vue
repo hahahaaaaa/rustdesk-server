@@ -17,7 +17,7 @@ import ConfirmDialog from '../components/ConfirmDialog.vue'
 import UserAccessModal from '../components/UserAccessModal.vue'
 import UserModal from '../components/UserModal.vue'
 import { getApi } from '../lib/api'
-import { clearSession, session } from '../lib/session'
+import { can, clearSession, session } from '../lib/session'
 import { initials } from '../lib/format'
 import { notify } from '../lib/toast'
 
@@ -26,6 +26,7 @@ const api = getApi()
 
 const users = ref([])
 const groups = ref([])
+const roles = ref([])
 const loading = ref(true)
 const refreshing = ref(false)
 const error = ref('')
@@ -53,6 +54,12 @@ const rows = computed(() =>
   })
 )
 
+const canAssignRoles = computed(() => session.user?.is_admin === true)
+
+function canManageTarget(user) {
+  return canAssignRoles.value || !user.is_admin
+}
+
 const stats = computed(() => ({
   total: users.value.length,
   admins: users.value.filter((user) => user.is_admin).length,
@@ -72,6 +79,14 @@ async function load(showSpinner = true) {
     ])
     users.value = userRows
     groups.value = groupRows
+    if (can('role.manage')) {
+      api
+        .getRoles()
+        .then((roleRows) => {
+          roles.value = roleRows
+        })
+        .catch(() => {})
+    }
   } catch (e) {
     error.value = e.message || '用户列表加载失败。'
     if (e.status === 401) {
@@ -90,6 +105,10 @@ function isSelf(user) {
 
 function displayName(user) {
   return user.display_name || user.name
+}
+
+function userRoles(user) {
+  return Array.isArray(user.roles) ? user.roles : []
 }
 
 function openCreate() {
@@ -312,12 +331,25 @@ async function resetUserTfa() {
                 </td>
                 <td>{{ user.email || '—' }}</td>
                 <td>
-                  <span class="tag" :class="{ 'tag-blue': user.is_admin }">
-                    {{ user.is_admin ? '管理员' : '普通用户' }}
-                  </span>
-                  <span v-if="user.tfa_enabled" class="tag tag-tfa">
-                    双重认证
-                  </span>
+                  <div class="role-tags">
+                    <span v-if="user.is_admin" class="tag tag-blue">管理员</span>
+                    <span
+                      v-for="role in userRoles(user)"
+                      :key="role"
+                      class="tag"
+                    >
+                      {{ role }}
+                    </span>
+                    <span
+                      v-if="!user.is_admin && !userRoles(user).length"
+                      class="tag"
+                    >
+                      普通用户
+                    </span>
+                    <span v-if="user.tfa_enabled" class="tag tag-tfa">
+                      双重认证
+                    </span>
+                  </div>
                 </td>
                 <td>
                   <span
@@ -331,6 +363,7 @@ async function resetUserTfa() {
                 <td>
                   <div class="row-actions">
                     <button
+                      v-if="canManageTarget(user)"
                       class="icon-btn"
                       type="button"
                       title="编辑用户"
@@ -339,6 +372,7 @@ async function resetUserTfa() {
                       <Pencil :size="14" />
                     </button>
                     <button
+                      v-if="canManageTarget(user)"
                       class="icon-btn"
                       type="button"
                       title="分组授权"
@@ -347,7 +381,7 @@ async function resetUserTfa() {
                       <FolderLock :size="14" />
                     </button>
                     <button
-                      v-if="user.tfa_enabled && !isSelf(user)"
+                      v-if="user.tfa_enabled && !isSelf(user) && canAssignRoles"
                       class="icon-btn"
                       type="button"
                       title="重置双重认证"
@@ -356,6 +390,7 @@ async function resetUserTfa() {
                       <KeyRound :size="14" />
                     </button>
                     <button
+                      v-if="canManageTarget(user)"
                       class="icon-btn danger"
                       type="button"
                       title="删除用户"
@@ -391,23 +426,40 @@ async function resetUserTfa() {
               </span>
             </div>
             <div class="user-card-meta">
-              <span class="tag" :class="{ 'tag-blue': user.is_admin }">
-                {{ user.is_admin ? '管理员' : '普通用户' }}
+              <span v-if="user.is_admin" class="tag tag-blue">管理员</span>
+              <span v-for="role in userRoles(user)" :key="role" class="tag">
+                {{ role }}
+              </span>
+              <span
+                v-if="!user.is_admin && !userRoles(user).length"
+                class="tag"
+              >
+                普通用户
               </span>
               <span v-if="user.tfa_enabled" class="tag tag-tfa">双重认证</span>
               <span class="user-card-email">{{ user.email || '未填写邮箱' }}</span>
             </div>
             <div class="user-card-actions">
-              <button class="row-link" type="button" @click="openEdit(user)">
+              <button
+                v-if="canManageTarget(user)"
+                class="row-link"
+                type="button"
+                @click="openEdit(user)"
+              >
                 <Pencil :size="13" />
                 编辑
               </button>
-              <button class="row-link" type="button" @click="openAccess(user)">
+              <button
+                v-if="canManageTarget(user)"
+                class="row-link"
+                type="button"
+                @click="openAccess(user)"
+              >
                 <FolderLock :size="13" />
                 分组授权
               </button>
               <button
-                v-if="user.tfa_enabled && !isSelf(user)"
+                v-if="user.tfa_enabled && !isSelf(user) && canAssignRoles"
                 class="row-link"
                 type="button"
                 @click="tfaResetTarget = user"
@@ -416,6 +468,7 @@ async function resetUserTfa() {
                 重置 2FA
               </button>
               <button
+                v-if="canManageTarget(user)"
                 class="icon-btn danger user-card-delete"
                 type="button"
                 title="删除用户"
@@ -433,6 +486,8 @@ async function resetUserTfa() {
     <UserModal
       v-if="modalOpen"
       :user="editingUser"
+      :roles="canAssignRoles ? roles : []"
+      :can-assign-roles="canAssignRoles"
       :self="editingUser ? isSelf(editingUser) : false"
       :busy="modalBusy"
       :error="modalError"
@@ -526,8 +581,15 @@ async function resetUserTfa() {
   gap: 2px;
 }
 
+.role-tags {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  max-width: 260px;
+}
+
 .tag-tfa {
-  margin-left: 4px;
   background: var(--green-wash);
   box-shadow: none;
   color: var(--green);
