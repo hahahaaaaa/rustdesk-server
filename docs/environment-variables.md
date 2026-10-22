@@ -248,28 +248,11 @@ required):
   relay the API should proxy to.
 * Every start is recorded in the audit log as `web_control.start`.
 * To serve the console over HTTPS, terminate TLS in front of the API and keep
-  WebSocket upgrades enabled. For example, with nginx:
-
-  ```nginx
-  server {
-      listen 443 ssl;
-      server_name rd.example.com;
-      ssl_certificate     /etc/nginx/certs/fullchain.pem;
-      ssl_certificate_key /etc/nginx/certs/privkey.pem;
-
-      location / {
-          proxy_pass http://127.0.0.1:21114;
-          proxy_http_version 1.1;
-          proxy_set_header Host $host;
-          proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-          proxy_set_header X-Forwarded-Proto $scheme;
-          proxy_set_header Upgrade $http_upgrade;
-          proxy_set_header Connection "upgrade";
-          proxy_read_timeout 3600s;
-          proxy_send_timeout 3600s;
-      }
-  }
-  ```
+  WebSocket upgrades enabled. Native clients with **Use WebSocket** also need
+  `/ws/id` and `/ws/relay`, so the same proxy must cover the `hbbs`/`hbbr`
+  WebSocket ports. A complete configuration for the console, `/ws/id` and
+  `/ws/relay` is in [`nginx/rustdesk.conf`](nginx/rustdesk.conf); copy it to
+  `/etc/nginx/conf.d/` and adjust the domain, certificates and upstreams.
 
 
 ### Pro-equivalent administration features
