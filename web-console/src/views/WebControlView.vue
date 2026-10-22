@@ -43,6 +43,8 @@ const displays = ref([])
 const currentDisplay = ref(0)
 const quality = ref(3)
 const isFullscreen = ref(false)
+const stallKind = ref('')
+const stalled = computed(() => Boolean(stallKind.value))
 
 const passwordOpen = ref(false)
 const passwordWrong = ref(false)
@@ -60,6 +62,9 @@ const title = computed(() => sessionInfo.value?.device?.name || '远程控制')
 const deviceId = computed(() => sessionInfo.value?.device?.id || '')
 const statusLabel = computed(() => {
   if (error.value) return '连接失败'
+  if (stalled.value) {
+    return stallKind.value === 'connection' ? '连接可能已断开' : '画面可能已卡住'
+  }
   if (connected.value) return '已连接'
   return phaseText.value
 })
@@ -113,6 +118,9 @@ function handlers() {
     onFrame: () => {
       hasVideo.value = true
     },
+    onStall: ({ active, kind }) => {
+      stallKind.value = active ? String(kind || 'video') : ''
+    },
     onPeerClosed: ({ reason }) => {
       error.value = reason
     },
@@ -121,9 +129,11 @@ function handlers() {
       connecting.value = false
       connected.value = false
       passwordOpen.value = false
+      stallKind.value = ''
     },
     onClosed: (reason) => {
       connected.value = false
+      stallKind.value = ''
       if (!error.value) error.value = reason
     },
   }
@@ -136,6 +146,7 @@ async function bootstrap() {
   hasVideo.value = false
   connected.value = false
   connecting.value = true
+  stallKind.value = ''
   passwordOpen.value = false
   password.value = ''
   passwordWrong.value = false
@@ -158,6 +169,7 @@ async function bootstrap() {
       handlers: handlers(),
     })
     client.attachCanvas(canvasEl.value)
+    client.setVisible(document.visibilityState !== 'hidden')
     await client.start()
   } catch (e) {
     if (disposed) return
@@ -221,6 +233,11 @@ function switchDisplay(value) {
 function refresh() {
   client?.refresh()
   notify('已请求刷新画面。', 'info')
+}
+
+function dismissStall() {
+  client?.dismissStall()
+  stallKind.value = ''
 }
 
 function ctrlAltDel() {
@@ -295,6 +312,7 @@ function canTypeKeyboard() {
 
 function onKeyDown(event) {
   if (!canTypeKeyboard()) return
+  client?.noteActivity()
   if (client?.sendKeyboardEvent(event, true)) {
     event.preventDefault()
     event.stopPropagation()
@@ -317,6 +335,7 @@ function onCompositionEnd(event) {
 function onPointerDown(event) {
   if (!connected.value || passwordOpen.value || clipboardOpen.value) return
   frameEl.value?.focus()
+  client?.noteActivity()
   if (!event.isPrimary) return
   client?.mouseDown(event)
   try {
@@ -328,6 +347,7 @@ function onPointerDown(event) {
 
 function onPointerMove(event) {
   if (!connected.value || passwordOpen.value || clipboardOpen.value) return
+  client?.noteActivity()
   if (!event.isPrimary) return
   client?.mouseMove(event)
 }
@@ -340,6 +360,7 @@ function onPointerUp(event) {
 
 function onWheel(event) {
   if (!connected.value || passwordOpen.value || clipboardOpen.value) return
+  client?.noteActivity()
   client?.mouseWheel(event)
 }
 
@@ -355,6 +376,10 @@ function onBlur() {
   client?.releaseAllKeys()
 }
 
+function onVisibilityChange() {
+  client?.setVisible(document.visibilityState !== 'hidden')
+}
+
 function onBeforeUnload() {
   client?.close('页面已关闭。')
 }
@@ -362,6 +387,7 @@ function onBeforeUnload() {
 onMounted(() => {
   bootstrap()
   document.addEventListener('fullscreenchange', onFullscreenChange)
+  document.addEventListener('visibilitychange', onVisibilityChange)
   window.addEventListener('blur', onBlur)
   window.addEventListener('beforeunload', onBeforeUnload)
 })
@@ -370,6 +396,7 @@ onBeforeUnmount(() => {
   disposed = true
   teardown()
   document.removeEventListener('fullscreenchange', onFullscreenChange)
+  document.removeEventListener('visibilitychange', onVisibilityChange)
   window.removeEventListener('blur', onBlur)
   window.removeEventListener('beforeunload', onBeforeUnload)
 })
@@ -382,7 +409,7 @@ onBeforeUnmount(() => {
         <ArrowLeft :size="18" />
       </button>
       <div class="wc-title">
-        <span class="wc-dot" :class="{ live: connected && !error }" />
+        <span class="wc-dot" :class="{ live: connected && !error, warn: stalled }" />
         <div class="wc-name">
           <strong>{{ title }}</strong>
           <span v-if="deviceId" class="wc-id">{{ formatId(deviceId) }}</span>
@@ -467,6 +494,40 @@ onBeforeUnmount(() => {
               首次连接时，对方设备可能会弹出“接受连接”提示，需要对方确认后才能看到画面。
             </p>
           </template>
+        </div>
+        <div v-if="stalled && hasVideo && !error" class="wc-stall" role="status">
+          <AlertTriangle :size="18" class="wc-stall-icon" />
+          <div class="wc-stall-text">
+            <strong>{{ stallKind === 'connection' ? '连接可能已断开' : '画面可能已卡住' }}</strong>
+            <span>
+              {{
+                stallKind === 'connection'
+                  ? '长时间没有收到远程设备的响应，画面和操作可能已失效。'
+                  : '画面长时间没有更新，刷新画面通常可以恢复。'
+              }}
+            </span>
+          </div>
+          <div class="wc-stall-actions">
+            <button
+              class="wc-btn"
+              :class="stallKind === 'connection' ? 'ghost' : 'primary'"
+              type="button"
+              @click="refresh"
+            >
+              刷新画面
+            </button>
+            <button
+              class="wc-btn"
+              :class="stallKind === 'connection' ? 'primary' : 'ghost'"
+              type="button"
+              @click="retry"
+            >
+              重新连接
+            </button>
+            <button class="wc-icon" type="button" title="关闭提示" @click="dismissStall">
+              <X :size="16" />
+            </button>
+          </div>
         </div>
       </div>
       <p v-if="connected && hasVideo" class="wc-hint">
@@ -612,6 +673,11 @@ onBeforeUnmount(() => {
 .wc-dot.live {
   background: #3ecf8e;
   box-shadow: 0 0 0 3px rgba(62, 207, 142, 0.2);
+}
+
+.wc-dot.warn {
+  background: #f0b23a;
+  box-shadow: 0 0 0 3px rgba(240, 178, 58, 0.22);
 }
 
 .wc-name {
@@ -789,6 +855,67 @@ onBeforeUnmount(() => {
   display: flex;
   gap: 10px;
   margin-top: 8px;
+}
+
+.wc-stall {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  z-index: 15;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: max-content;
+  max-width: calc(100% - 24px);
+  padding: 10px 12px;
+  transform: translateX(-50%);
+  border: 1px solid rgba(240, 178, 58, 0.4);
+  border-radius: 10px;
+  background: rgba(34, 29, 18, 0.94);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(10px);
+}
+
+.wc-stall-icon {
+  flex: none;
+  color: #f0b23a;
+}
+
+.wc-stall-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.wc-stall-text strong {
+  color: #f6e7c8;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.wc-stall-text span {
+  color: #c9b992;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.wc-stall-actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+}
+
+.wc-stall-actions .wc-btn {
+  height: 30px;
+  padding: 0 12px;
+  font-size: 12px;
+}
+
+.wc-stall-actions .wc-icon {
+  width: 28px;
+  height: 28px;
 }
 
 .wc-btn {
@@ -1037,6 +1164,17 @@ onBeforeUnmount(() => {
 
   .wc-stage {
     padding: 8px;
+  }
+
+  .wc-stall {
+    top: 8px;
+    flex-wrap: wrap;
+    width: calc(100% - 16px);
+  }
+
+  .wc-stall-actions {
+    width: 100%;
+    justify-content: flex-end;
   }
 
   .wc-hint {

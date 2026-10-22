@@ -19,6 +19,15 @@ const CONNECT_TIMEOUT = 15000
 const RENDEZVOUS_TIMEOUT = 30000
 const SECURE_TIMEOUT = 20000
 
+// The remote screen may legitimately produce no frames while it is static, so a quiet
+// screen is not treated as a stall until a keyframe request goes unanswered.
+const STALL_IDLE_MS = 30000
+const STALL_PROBE_TIMEOUT = 8000
+const STALL_PROBE_GAP = 15000
+const PEER_SILENCE_MS = 20000
+const WATCHDOG_INTERVAL = 5000
+const VISIBLE_PROBE_GAP = 5000
+
 const PUNCH_FAILURES = {
   0: '设备 ID 不存在，请确认设备已在服务器注册。',
   2: '对方设备离线。',
@@ -110,6 +119,16 @@ export class WebControlClient {
     this.pendingMove = null
     this.moveFrame = 0
     this.lastClipboard = ''
+    this.lastPeerAt = 0
+    this.lastVideoAt = 0
+    this.lastDrawAt = 0
+    this.lastRecoverAt = 0
+    this.testDelaySeen = false
+    this.pageHidden = false
+    this.hiddenAt = 0
+    this.stallActive = ''
+    this.stallTimer = 0
+    this.watchdogTimer = 0
   }
 
   emit(event, payload) {
@@ -323,6 +342,7 @@ export class WebControlClient {
   }
 
   handleMessage(message) {
+    this.lastPeerAt = Date.now()
     if (message.video_frame) {
       this.handleVideoFrame(message.video_frame)
       return
@@ -372,6 +392,7 @@ export class WebControlClient {
     }
     if (message.test_delay) {
       if (!message.test_delay.from_client) {
+        this.testDelaySeen = true
         this.send({ test_delay: message.test_delay })
       }
       return
@@ -417,6 +438,11 @@ export class WebControlClient {
     this.peerPlatform = info.platform || ''
     this.displays = Array.isArray(info.displays) ? info.displays : []
     this.currentDisplay = Number(info.current_display || 0)
+    const now = Date.now()
+    this.lastPeerAt = now
+    this.lastVideoAt = now
+    this.lastDrawAt = now
+    this.startWatchdog()
     this.setPhase('connected')
     this.emit('onPeer', info)
     this.emit('onDisplays', {
@@ -426,6 +452,7 @@ export class WebControlClient {
   }
 
   handleVideoFrame(frame) {
+    this.lastVideoAt = Date.now()
     const display = Number(frame.display || 0)
     if (this.pendingDisplay !== null) {
       if (display !== this.pendingDisplay) {
@@ -470,6 +497,99 @@ export class WebControlClient {
     this.requestKeyFrame()
   }
 
+  noteActivity() {
+    if (this.closed || !this.loggedIn || this.stallActive) return
+    if (Date.now() - this.lastDrawAt < STALL_IDLE_MS) return
+    this.probeVideo('activity')
+  }
+
+  setVisible(visible) {
+    const shown = Boolean(visible)
+    if (shown === !this.pageHidden) return
+    this.pageHidden = !shown
+    if (!shown) {
+      this.hiddenAt = Date.now()
+      return
+    }
+    const hiddenFor = this.hiddenAt ? Date.now() - this.hiddenAt : 0
+    this.hiddenAt = 0
+    if (this.closed || !this.loggedIn) return
+    if (hiddenFor >= VISIBLE_PROBE_GAP) this.probeVideo('visible')
+  }
+
+  startWatchdog() {
+    if (this.watchdogTimer) return
+    this.watchdogTimer = setInterval(() => this.watchdogTick(), WATCHDOG_INTERVAL)
+  }
+
+  watchdogTick() {
+    if (this.closed || !this.loggedIn || this.pageHidden) return
+    const now = Date.now()
+    if (this.testDelaySeen && now - this.lastPeerAt >= PEER_SILENCE_MS) {
+      this.showStall('connection')
+      return
+    }
+    if (this.stallActive) return
+    if (
+      now - this.lastVideoAt < STALL_IDLE_MS &&
+      this.lastVideoAt - this.lastDrawAt >= STALL_PROBE_TIMEOUT
+    ) {
+      this.probeVideo('decoder')
+    }
+  }
+
+  probeVideo(reason) {
+    if (this.closed || !this.loggedIn || this.stallTimer) return
+    if (this.stallActive && reason !== 'manual') return
+    const now = Date.now()
+    if (reason !== 'manual' && now - this.lastRecoverAt < STALL_PROBE_GAP) return
+    if (reason === 'activity' && now - this.lastDrawAt < STALL_IDLE_MS) return
+    if (
+      reason === 'decoder' &&
+      (now - this.lastVideoAt >= STALL_IDLE_MS ||
+        this.lastVideoAt - this.lastDrawAt < STALL_PROBE_TIMEOUT)
+    ) {
+      return
+    }
+    this.lastRecoverAt = now
+    this.decoder?.configure(0, 0)
+    this.send({ misc: { refresh_video: true } })
+    if (this.closed) return
+    this.stallTimer = setTimeout(() => {
+      this.stallTimer = 0
+      if (this.closed) return
+      if (this.lastDrawAt >= now) return
+      const silent = this.testDelaySeen && Date.now() - this.lastPeerAt >= PEER_SILENCE_MS
+      this.showStall(silent ? 'connection' : 'video')
+    }, STALL_PROBE_TIMEOUT)
+  }
+
+  showStall(kind) {
+    if (this.closed) return
+    const next = kind === 'connection' ? 'connection' : 'video'
+    if (this.stallActive === next) return
+    this.stallActive = next
+    this.emit('onStall', { active: true, kind: next })
+  }
+
+  clearStall() {
+    if (this.stallTimer) {
+      clearTimeout(this.stallTimer)
+      this.stallTimer = 0
+    }
+    if (!this.stallActive) return
+    this.stallActive = ''
+    this.emit('onStall', { active: false })
+  }
+
+  dismissStall() {
+    if (this.stallTimer) {
+      clearTimeout(this.stallTimer)
+      this.stallTimer = 0
+    }
+    this.stallActive = ''
+  }
+
   drawFrame(frame) {
     if (!this.canvas || !this.context) return
     const width = frame.displayWidth
@@ -482,6 +602,8 @@ export class WebControlClient {
       this.emit('onVideoSize', this.videoSize)
     }
     this.context.drawImage(frame, 0, 0, width, height)
+    this.lastDrawAt = Date.now()
+    this.clearStall()
     if (!this.loggedIn) this.loggedIn = true
     this.emit('onFrame')
   }
@@ -685,8 +807,8 @@ export class WebControlClient {
   }
 
   refresh() {
-    this.decoder?.configure(0, 0)
-    this.send({ misc: { refresh_video: true } })
+    if (this.closed || !this.wire) return
+    this.probeVideo('manual')
   }
 
   ctrlAltDel() {
@@ -927,6 +1049,15 @@ export class WebControlClient {
   teardown() {
     this.releaseAllKeys()
     this.clearPendingDisplay()
+    if (this.watchdogTimer) {
+      clearInterval(this.watchdogTimer)
+      this.watchdogTimer = 0
+    }
+    if (this.stallTimer) {
+      clearTimeout(this.stallTimer)
+      this.stallTimer = 0
+    }
+    this.stallActive = ''
     if (this.moveFrame) {
       cancelAnimationFrame(this.moveFrame)
       this.moveFrame = 0
