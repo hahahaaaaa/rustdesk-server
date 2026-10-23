@@ -17,7 +17,7 @@ import AppShell from '../components/AppShell.vue'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
 import { getApi } from '../lib/api'
 import { exactTime, timeAgo } from '../lib/format'
-import { clearSession } from '../lib/session'
+import { clearSession, can } from '../lib/session'
 import { notify } from '../lib/toast'
 
 const router = useRouter()
@@ -89,6 +89,7 @@ const deleteTarget = ref(null)
 const deleteBusy = ref(false)
 
 const activeTab = computed(() => TABS.find((item) => item.key === tab.value))
+const canManage = computed(() => can('audit.manage'))
 const pageCount = computed(() => Math.max(1, Math.ceil(total.value / pageSize)))
 const rangeStart = computed(() =>
   total.value ? (page.value - 1) * pageSize + 1 : 0
@@ -505,7 +506,7 @@ async function removeLog() {
                     </span>
                   </td>
                   <td>
-                    <div class="row-actions">
+                    <div v-if="canManage" class="row-actions">
                       <button
                         class="icon-btn"
                         type="button"
@@ -571,7 +572,7 @@ async function removeLog() {
                     </span>
                   </td>
                   <td>
-                    <div class="row-actions">
+                    <div v-if="canManage" class="row-actions">
                       <button
                         class="icon-btn"
                         type="button"
@@ -638,7 +639,7 @@ async function removeLog() {
                     </span>
                   </td>
                   <td>
-                    <div class="row-actions">
+                    <div v-if="canManage" class="row-actions">
                       <button
                         class="icon-btn"
                         type="button"
@@ -711,7 +712,7 @@ async function removeLog() {
               <div v-if="row.note" class="log-card-note">{{ row.note }}</div>
               <div class="log-card-time">{{ exactTime(row.created_at) }}</div>
 
-              <div class="log-card-actions">
+              <div v-if="canManage" class="log-card-actions">
                 <button
                   class="btn btn-ghost btn-sm"
                   type="button"

@@ -296,6 +296,61 @@ async fn bind_device(
     device_uuid: &str,
     username: &str,
 ) -> Result<(), AppError> {
+    let device_id = device_id.trim();
+    let device_uuid = device_uuid.trim();
+    if device_id.is_empty() {
+        return Ok(());
+    }
+    let binding: Option<(String, String)> =
+        sqlx::query_as("SELECT username, uuid FROM device_bindings WHERE device_id = ?")
+            .bind(device_id)
+            .fetch_optional(&state.db)
+            .await?;
+    let device: Option<(String, String)> =
+        sqlx::query_as("SELECT uuid, user FROM devices WHERE id = ?")
+            .bind(device_id)
+            .fetch_optional(&state.db)
+            .await?;
+
+    if let Some((bound_user, bound_uuid)) = binding.as_ref() {
+        if !bound_user.eq_ignore_ascii_case(username) {
+            let expected = if !bound_uuid.is_empty() {
+                Some(bound_uuid.as_str())
+            } else {
+                device
+                    .as_ref()
+                    .map(|(uuid, _)| uuid.as_str())
+                    .filter(|uuid| !uuid.is_empty())
+            };
+            match expected {
+                Some(expected) if !device_uuid.is_empty() && device_uuid == expected => {}
+                _ => {
+                    tracing::warn!(
+                        device_id,
+                        username,
+                        "refusing to rebind a device to another user without uuid proof"
+                    );
+                    return Ok(());
+                }
+            }
+        }
+    } else if let Some((stored_uuid, stored_user)) = device.as_ref() {
+        if !stored_user.is_empty() && !stored_user.eq_ignore_ascii_case(username) {
+            if stored_uuid.is_empty() || device_uuid.is_empty() || device_uuid != stored_uuid {
+                tracing::warn!(
+                    device_id,
+                    username,
+                    "refusing to claim a device bound to another user"
+                );
+                return Ok(());
+            }
+        }
+        if !stored_uuid.is_empty() && device_uuid != stored_uuid {
+            tracing::warn!(device_id, username, "refusing to bind a device with mismatched uuid");
+            return Ok(());
+        }
+    }
+
     let now = now_secs();
     sqlx::query(
         "INSERT INTO device_bindings (device_id, uuid, username, updated_at)

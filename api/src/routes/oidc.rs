@@ -1,9 +1,11 @@
 use axum::{
     extract::{Query, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     response::{Html, IntoResponse, Redirect, Response},
     Json,
 };
+use jsonwebtoken::jwk::JwkSet;
+use jsonwebtoken::{decode, decode_header, Algorithm, DecodingKey, Validation};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::time::Duration;
@@ -64,6 +66,8 @@ struct Discovery {
     #[serde(default)]
     userinfo_endpoint: String,
     #[serde(default)]
+    jwks_uri: String,
+    #[serde(default)]
     issuer: String,
 }
 
@@ -88,6 +92,7 @@ pub async fn status(State(state): State<AppState>) -> Json<Value> {
 
 pub async fn auth_start(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(body): Json<OidcAuthRequest>,
 ) -> Result<Json<Value>, AppError> {
     if setting(&state, "oidc_enabled").await != "1" {
@@ -106,16 +111,26 @@ pub async fn auth_start(
         return Ok(Json(json!({ "error": "OIDC 提供方配置不完整。" })));
     }
 
-    let api_domain = normalize_domain(&body.api_domain);
-    if api_domain.is_empty() {
-        return Ok(Json(json!({ "error": "缺少 API 服务地址。" })));
+    let op = body.op.trim();
+    let device_id = body.id.trim();
+    let device_uuid = body.uuid.trim();
+    if op.is_empty() {
+        return Ok(Json(json!({ "error": "缺少登录类型。" })));
+    }
+    if op != "web" && (device_id.is_empty() || device_uuid.is_empty()) {
+        return Ok(Json(json!({ "error": "缺少设备标识，无法发起单点登录。" })));
     }
     let redirect_uri = {
         let configured = setting(&state, "oidc_redirect_url").await;
-        if configured.is_empty() {
-            format!("{api_domain}/api/oidc/callback")
-        } else {
+        if !configured.is_empty() {
             configured
+        } else {
+            let Some(origin) = callback_origin(&headers, &body.api_domain) else {
+                return Ok(Json(json!({
+                    "error": "无法确定 OIDC 回调地址，请检查反向代理的 Host 头或在集成设置中填写回调地址。"
+                })));
+            };
+            format!("{origin}/api/oidc/callback")
         }
     };
     let scopes = {
@@ -135,9 +150,9 @@ pub async fn auth_start(
          VALUES (?, ?, ?, ?, ?, ?, '', '', 0, 0, ?, ?)",
     )
     .bind(&code)
-    .bind(body.op.trim())
-    .bind(body.id.trim())
-    .bind(body.uuid.trim())
+    .bind(op)
+    .bind(device_id)
+    .bind(device_uuid)
     .bind(body.device_info.to_string())
     .bind(&redirect_uri)
     .bind(now)
@@ -271,7 +286,9 @@ async fn complete_authorization(
     let issuer = setting(state, "oidc_issuer").await;
     let client_id = setting(state, "oidc_client_id").await;
     let client_secret = setting(state, "oidc_client_secret").await;
-    let discovery = fetch_discovery(issuer).await.map_err(AppError::BadRequest)?;
+    let discovery = fetch_discovery(issuer.clone())
+        .await
+        .map_err(AppError::BadRequest)?;
     let tokens = exchange_code(
         &discovery,
         &client_id,
@@ -282,19 +299,7 @@ async fn complete_authorization(
     .await
     .map_err(AppError::BadRequest)?;
 
-    let mut claims = if discovery.userinfo_endpoint.is_empty() {
-        Value::Null
-    } else {
-        fetch_userinfo(&discovery.userinfo_endpoint, &tokens.access_token)
-            .await
-            .unwrap_or(Value::Null)
-    };
-    if !claims.is_object() && !tokens.id_token.is_empty() {
-        claims = claims_from_id_token(&tokens.id_token).unwrap_or(Value::Null);
-    }
-    if !claims.is_object() {
-        return Err(AppError::BadRequest("无法获取 OIDC 用户信息。".to_owned()));
-    }
+    let claims = collect_claims(&discovery, &tokens, &issuer, &client_id).await?;
 
     let subject = claims
         .get("sub")
@@ -468,10 +473,11 @@ pub async fn auth_query(
     if expires_at < now_secs() {
         return Json(json!({ "body": json!({ "error": "OIDC 登录超时，请重试。" }).to_string() }));
     }
-    if !query.id.trim().is_empty() && !device_id.is_empty() && query.id.trim() != device_id {
-        return Json(json!({ "body": json!({ "error": "OIDC 登录设备不匹配。" }).to_string() }));
-    }
-    if !query.uuid.trim().is_empty() && !device_uuid.is_empty() && query.uuid.trim() != device_uuid {
+    if device_id.is_empty()
+        || device_uuid.is_empty()
+        || query.id.trim() != device_id
+        || query.uuid.trim() != device_uuid
+    {
         return Json(json!({ "body": json!({ "error": "OIDC 登录设备不匹配。" }).to_string() }));
     }
     if authorized == 0 || username.is_empty() {
@@ -484,6 +490,28 @@ pub async fn auth_query(
     };
     if user.status != 1 {
         return Json(json!({ "body": json!({ "error": "账号已被禁用。" }).to_string() }));
+    }
+    let consumed = sqlx::query(
+        "UPDATE oidc_sessions SET consumed = 1
+         WHERE code = ? AND op != 'web' AND authorized = 1 AND consumed = 0
+           AND expires_at >= ?",
+    )
+    .bind(query.code.trim())
+    .bind(now_secs())
+    .execute(&state.db)
+    .await;
+    match consumed {
+        Ok(result) if result.rows_affected() == 1 => {}
+        Ok(_) => {
+            return Json(
+                json!({ "body": json!({ "error": "OIDC 登录会话已失效，请重新登录。" }).to_string() }),
+            )
+        }
+        Err(_) => {
+            return Json(
+                json!({ "body": json!({ "error": "OIDC 登录状态更新失败。" }).to_string() }),
+            )
+        }
     }
     let token = match auth::create_token(&state, &user) {
         Ok(token) => token,
@@ -536,10 +564,18 @@ pub async fn web_exchange(
     if user.status != 1 {
         return Err(AppError::Unauthorized("账号已被禁用。".to_owned()));
     }
-    sqlx::query("UPDATE oidc_sessions SET consumed = 1 WHERE code = ?")
-        .bind(code)
-        .execute(&state.db)
-        .await?;
+    let consumed = sqlx::query(
+        "UPDATE oidc_sessions SET consumed = 1
+         WHERE code = ? AND op = 'web' AND authorized = 1 AND consumed = 0
+           AND expires_at >= ?",
+    )
+    .bind(code)
+    .bind(now_secs())
+    .execute(&state.db)
+    .await?;
+    if consumed.rows_affected() == 0 {
+        return Err(AppError::Unauthorized("登录会话无效或已过期。".to_owned()));
+    }
     let payload = super::auth::complete_login(&state, &user, "", "", "oidc-web").await?;
     Ok(Json(payload))
 }
@@ -574,8 +610,79 @@ fn html_escape(value: &str) -> String {
         .replace('\'', "&#39;")
 }
 
-fn normalize_domain(value: &str) -> String {
-    value.trim().trim_end_matches('/').to_owned()
+fn callback_origin(headers: &HeaderMap, api_domain: &str) -> Option<String> {
+    let host = forwarded_host(headers)?;
+    let api = parse_origin(api_domain);
+    let scheme = forwarded_proto(headers)
+        .or_else(|| api.as_ref().map(|(scheme, _)| scheme.clone()))
+        .unwrap_or_else(|| "http".to_owned());
+    if let Some((_, api_host)) = api.as_ref() {
+        if !same_host(api_host, &host, &scheme) {
+            return None;
+        }
+    }
+    Some(format!("{scheme}://{host}"))
+}
+
+fn parse_origin(value: &str) -> Option<(String, String)> {
+    let value = value.trim();
+    let (scheme, rest) = value.split_once("://")?;
+    let scheme = scheme.trim().to_ascii_lowercase();
+    if scheme != "http" && scheme != "https" {
+        return None;
+    }
+    let end = rest
+        .find(|ch| ch == '/' || ch == '?' || ch == '#')
+        .unwrap_or(rest.len());
+    let host = rest[..end].trim();
+    if host.is_empty() || !valid_host(host) {
+        return None;
+    }
+    Some((scheme, host.to_ascii_lowercase()))
+}
+
+fn forwarded_host(headers: &HeaderMap) -> Option<String> {
+    let raw = header_first(headers, "x-forwarded-host").or_else(|| header_first(headers, "host"))?;
+    let host = raw.trim();
+    if host.is_empty() || !valid_host(host) {
+        return None;
+    }
+    Some(host.to_ascii_lowercase())
+}
+
+fn forwarded_proto(headers: &HeaderMap) -> Option<String> {
+    let value = header_first(headers, "x-forwarded-proto")?;
+    let scheme = value.trim().to_ascii_lowercase();
+    if scheme == "http" || scheme == "https" {
+        Some(scheme)
+    } else {
+        None
+    }
+}
+
+fn header_first(headers: &HeaderMap, name: &str) -> Option<String> {
+    headers
+        .get(name)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(',').next())
+        .map(str::trim)
+        .map(str::to_owned)
+}
+
+fn valid_host(host: &str) -> bool {
+    host.len() <= 255
+        && host
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | ':' | '[' | ']' | '_'))
+}
+
+fn same_host(a: &str, b: &str, scheme: &str) -> bool {
+    strip_default_port(a, scheme).eq_ignore_ascii_case(strip_default_port(b, scheme))
+}
+
+fn strip_default_port<'a>(host: &'a str, scheme: &str) -> &'a str {
+    let suffix = if scheme == "https" { ":443" } else { ":80" };
+    host.strip_suffix(suffix).unwrap_or(host)
 }
 
 fn sanitize_username(value: &str) -> Option<String> {
@@ -677,14 +784,111 @@ async fn fetch_userinfo(endpoint: &str, access_token: &str) -> Result<Value, Str
     .await
 }
 
-fn claims_from_id_token(id_token: &str) -> Option<Value> {
-    use base64::Engine;
-    let payload = id_token.split('.').nth(1)?;
-    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .decode(payload)
-        .or_else(|_| base64::engine::general_purpose::STANDARD_NO_PAD.decode(payload))
-        .ok()?;
-    serde_json::from_slice(&bytes).ok()
+async fn collect_claims(
+    discovery: &Discovery,
+    tokens: &TokenResponse,
+    issuer: &str,
+    client_id: &str,
+) -> Result<Value, AppError> {
+    let mut claims = Value::Null;
+    if !tokens.id_token.is_empty() {
+        if discovery.jwks_uri.is_empty() {
+            return Err(AppError::BadRequest(
+                "OIDC 提供方未提供签名密钥地址。".to_owned(),
+            ));
+        }
+        let jwks = fetch_jwks(&discovery.jwks_uri)
+            .await
+            .map_err(AppError::BadRequest)?;
+        claims = verify_id_token(&tokens.id_token, &jwks, issuer, client_id)
+            .map_err(AppError::BadRequest)?;
+    }
+    if !discovery.userinfo_endpoint.is_empty() && !tokens.access_token.is_empty() {
+        if let Ok(userinfo) =
+            fetch_userinfo(&discovery.userinfo_endpoint, &tokens.access_token).await
+        {
+            if let Value::Object(map) = userinfo {
+                if let (Some(expected), Some(actual)) = (
+                    claims.get("sub").and_then(Value::as_str),
+                    map.get("sub").and_then(Value::as_str),
+                ) {
+                    if expected != actual {
+                        return Err(AppError::BadRequest(
+                            "OIDC 用户信息与身份令牌不一致。".to_owned(),
+                        ));
+                    }
+                }
+                match std::mem::take(&mut claims) {
+                    Value::Object(mut base) => {
+                        for (key, value) in map {
+                            base.insert(key, value);
+                        }
+                        claims = Value::Object(base);
+                    }
+                    _ => claims = Value::Object(map),
+                }
+            }
+        }
+    }
+    if claims.is_object() {
+        Ok(claims)
+    } else {
+        Err(AppError::BadRequest("无法获取 OIDC 用户信息。".to_owned()))
+    }
+}
+
+async fn fetch_jwks(url: &str) -> Result<JwkSet, String> {
+    let url = url.to_owned();
+    run_blocking(move || {
+        let agent = agent();
+        let response = agent
+            .get(&url)
+            .call()
+            .map_err(|err| format!("无法访问 OIDC 签名密钥：{err}"))?;
+        response
+            .into_json::<JwkSet>()
+            .map_err(|err| format!("OIDC 签名密钥格式无效：{err}"))
+    })
+    .await
+}
+
+fn verify_id_token(
+    id_token: &str,
+    jwks: &JwkSet,
+    issuer: &str,
+    client_id: &str,
+) -> Result<Value, String> {
+    let header =
+        decode_header(id_token).map_err(|err| format!("OIDC 身份令牌头部无效：{err}"))?;
+    if !matches!(
+        header.alg,
+        Algorithm::RS256
+            | Algorithm::RS384
+            | Algorithm::RS512
+            | Algorithm::PS256
+            | Algorithm::PS384
+            | Algorithm::PS512
+            | Algorithm::ES256
+            | Algorithm::ES384
+            | Algorithm::EdDSA
+    ) {
+        return Err("OIDC 身份令牌签名算法不受支持。".to_owned());
+    }
+    let key = if jwks.keys.len() == 1 {
+        jwks.keys.first()
+    } else {
+        header.kid.as_deref().and_then(|kid| jwks.find(kid))
+    }
+    .ok_or_else(|| "OIDC 身份令牌签名密钥不存在。".to_owned())?;
+    let decoding = DecodingKey::from_jwk(key)
+        .map_err(|err| format!("OIDC 身份令牌签名密钥无效：{err}"))?;
+    let mut validation = Validation::new(header.alg);
+    validation.set_required_spec_claims(&["exp", "iss", "aud", "sub"]);
+    validation.set_issuer(&[issuer.trim().trim_end_matches('/')]);
+    validation.set_audience(&[client_id]);
+    let data = decode::<Value>(id_token, &decoding, &validation)
+        .map_err(|err| format!("OIDC 身份令牌校验失败：{err}"))?;
+    Ok(data.claims)
 }
 
 fn basic_auth(username: &str, password: &str) -> String {
@@ -831,5 +1035,61 @@ fn require(auth: &AuthUser, permission: &str) -> Result<(), AppError> {
         Ok(())
     } else {
         Err(AppError::Forbidden("没有权限执行此操作。".to_owned()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{callback_origin, parse_origin, same_host};
+    use axum::http::{HeaderMap, HeaderValue};
+
+    fn headers(host: &str, proto: Option<&str>) -> HeaderMap {
+        let mut map = HeaderMap::new();
+        map.insert("host", HeaderValue::from_str(host).unwrap());
+        if let Some(proto) = proto {
+            map.insert("x-forwarded-proto", HeaderValue::from_str(proto).unwrap());
+        }
+        map
+    }
+
+    #[test]
+    fn derives_redirect_origin_from_request_headers() {
+        assert_eq!(
+            callback_origin(
+                &headers("rd.example.com", Some("https")),
+                "https://rd.example.com"
+            )
+            .as_deref(),
+            Some("https://rd.example.com")
+        );
+        assert_eq!(
+            callback_origin(&headers("10.0.0.2:21114", None), "http://10.0.0.2:21114").as_deref(),
+            Some("http://10.0.0.2:21114")
+        );
+        assert_eq!(
+            callback_origin(
+                &headers("rd.example.com:443", Some("https")),
+                "https://rd.example.com"
+            )
+            .as_deref(),
+            Some("https://rd.example.com:443")
+        );
+    }
+
+    #[test]
+    fn rejects_mismatched_or_invalid_hosts() {
+        assert!(callback_origin(
+            &headers("rd.example.com", Some("https")),
+            "https://evil.example"
+        )
+        .is_none());
+        assert!(callback_origin(
+            &headers("evil.com/", Some("https")),
+            "https://evil.com"
+        )
+        .is_none());
+        assert!(callback_origin(&HeaderMap::new(), "").is_none());
+        assert!(parse_origin("ftp://rd.example.com").is_none());
+        assert!(same_host("rd.example.com:443", "rd.example.com", "https"));
     }
 }

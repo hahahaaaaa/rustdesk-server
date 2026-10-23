@@ -1,5 +1,6 @@
 import { createRouter, createWebHashHistory } from 'vue-router'
 import { can, session } from './lib/session'
+import { expireSession, isIdleExpired } from './lib/session-idle'
 import AddressBooksView from './views/AddressBooksView.vue'
 import AuditView from './views/AuditView.vue'
 import DeploymentView from './views/DeploymentView.vue'
@@ -135,6 +136,10 @@ const router = createRouter({
 })
 
 router.beforeEach((to) => {
+  if (!to.meta.public && isIdleExpired()) {
+    expireSession()
+    return { path: '/login', query: { reason: 'idle' } }
+  }
   if (!to.meta.public && !session.token) {
     return {
       path: '/login',

@@ -295,7 +295,7 @@ fn nonce_or_new(nonce: &str) -> String {
     if nonce.is_empty() {
         uuid::Uuid::new_v4().to_string()
     } else {
-        nonce.to_owned()
+        nonce.chars().take(128).collect()
     }
 }
 
@@ -624,7 +624,7 @@ pub async fn update_note(
     Path((kind, id)): Path<(String, i64)>,
     Json(body): Json<Value>,
 ) -> Result<Json<Value>, AppError> {
-    require(&auth, "audit.read")?;
+    require(&auth, "audit.manage")?;
     let note = body
         .get("note")
         .and_then(Value::as_str)
@@ -648,7 +648,7 @@ pub async fn delete_log(
     auth: AuthUser,
     Path((kind, id)): Path<(String, i64)>,
 ) -> Result<Json<Value>, AppError> {
-    require(&auth, "audit.read")?;
+    require(&auth, "audit.manage")?;
     let table = table_for(&kind)?;
     sqlx::query(&format!("DELETE FROM {table} WHERE id = ?"))
         .bind(id)

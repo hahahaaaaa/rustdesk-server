@@ -1,8 +1,10 @@
 use axum::{
     extract::{rejection::JsonRejection, Json, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
 };
 use serde_json::{json, Value};
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
 
 use crate::auth::{create_token, decode_challenge, revoke_token, AuthUser};
 use crate::db;
@@ -14,9 +16,88 @@ use crate::rbac;
 use crate::AppState;
 
 const USER_COLUMNS: &str = "id, username, display_name, password_hash, email, note, avatar, status, is_admin, totp_secret, totp_enabled, email_verification, email_alarm_notification, email_verified, ldap_dn, oidc_subject, created_at, updated_at";
+const LOGIN_FAILURE_LIMIT: u32 = 10;
+const LOGIN_FAILURE_WINDOW_SECS: i64 = 300;
+const LOGIN_THROTTLE_MAX_ENTRIES: usize = 4096;
+
+#[derive(Default)]
+struct LoginFailure {
+    count: u32,
+    window_started: i64,
+}
+
+fn login_failures() -> &'static Mutex<HashMap<String, LoginFailure>> {
+    static FAILURES: OnceLock<Mutex<HashMap<String, LoginFailure>>> = OnceLock::new();
+    FAILURES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn login_key(username: &str, headers: &HeaderMap) -> String {
+    format!("{}|{}", username.to_lowercase(), client_ip(headers))
+}
+
+fn client_ip(headers: &HeaderMap) -> String {
+    let value = headers
+        .get("x-real-ip")
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .or_else(|| {
+            headers
+                .get("x-forwarded-for")
+                .and_then(|value| value.to_str().ok())
+                .and_then(|value| value.rsplit(',').next())
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+        })
+        .unwrap_or("unknown");
+    value.chars().take(64).collect()
+}
+
+fn login_blocked(key: &str) -> bool {
+    let now = now_secs();
+    let Ok(mut failures) = login_failures().lock() else {
+        return false;
+    };
+    match failures.get(key) {
+        Some(entry) if now - entry.window_started < LOGIN_FAILURE_WINDOW_SECS => {
+            entry.count >= LOGIN_FAILURE_LIMIT
+        }
+        Some(_) => {
+            failures.remove(key);
+            false
+        }
+        None => false,
+    }
+}
+
+fn record_login_failure(key: &str) {
+    let now = now_secs();
+    let Ok(mut failures) = login_failures().lock() else {
+        return;
+    };
+    if failures.len() > LOGIN_THROTTLE_MAX_ENTRIES {
+        failures.retain(|_, entry| now - entry.window_started < LOGIN_FAILURE_WINDOW_SECS);
+        if failures.len() > LOGIN_THROTTLE_MAX_ENTRIES {
+            failures.clear();
+        }
+    }
+    let entry = failures.entry(key.to_owned()).or_default();
+    if now - entry.window_started >= LOGIN_FAILURE_WINDOW_SECS {
+        entry.count = 0;
+        entry.window_started = now;
+    }
+    entry.count = entry.count.saturating_add(1);
+}
+
+fn clear_login_failures(key: &str) {
+    if let Ok(mut failures) = login_failures().lock() {
+        failures.remove(key);
+    }
+}
 
 pub async fn login(
     State(state): State<AppState>,
+    headers: HeaderMap,
     payload: Result<Json<LoginRequest>, JsonRejection>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
     let Json(request) = payload
@@ -33,6 +114,12 @@ pub async fn login(
     if request.password.is_empty() && (code.is_empty() || request.secret.trim().is_empty()) {
         return Err(AppError::BadRequest("请输入用户名和密码。".to_owned()));
     }
+    let throttle_key = login_key(username, &headers);
+    if login_blocked(&throttle_key) {
+        return Err(AppError::TooManyRequests(
+            "登录尝试过于频繁，请 5 分钟后再试。".to_owned(),
+        ));
+    }
 
     let mut user = match find_user(&state, username).await? {
         Some(user) => user,
@@ -43,16 +130,19 @@ pub async fn login(
                     Ok(Some(dn)) => provision_ldap_user(&state, username, &dn).await?,
                     Ok(None) => {
                         super::audit(&state, username, "login_failed", "", "unknown_user").await;
+                        record_login_failure(&throttle_key);
                         return Err(AppError::Unauthorized("用户名或密码错误。".to_owned()));
                     }
                     Err(err) => {
                         tracing::warn!(username = %username, error = %err, "LDAP authentication failed");
                         super::audit(&state, username, "login_failed", "", "ldap_error").await;
+                        record_login_failure(&throttle_key);
                         return Err(AppError::Unauthorized("用户名或密码错误。".to_owned()));
                     }
                 }
             } else {
                 super::audit(&state, username, "login_failed", "", "unknown_user").await;
+                record_login_failure(&throttle_key);
                 return Err(AppError::Unauthorized("用户名或密码错误。".to_owned()));
             }
         }
@@ -87,6 +177,7 @@ pub async fn login(
         }
         if !password_ok {
             super::audit(&state, username, "login_failed", "", "bad_password").await;
+            record_login_failure(&throttle_key);
             return Err(AppError::Unauthorized("用户名或密码错误。".to_owned()));
         }
     }
@@ -122,12 +213,14 @@ pub async fn login(
             if !crate::totp::verify_code(&user.totp_secret, code, crate::models::now_secs()) {
                 super::tfa::fail_login_challenge(&state, &jti).await?;
                 super::audit(&state, &user.username, "login_failed", "", "bad_tfa_code").await;
+                record_login_failure(&throttle_key);
                 return Err(AppError::Unauthorized("验证码不正确。".to_owned()));
             }
             super::tfa::complete_login_challenge(&state, &jti).await?;
             totp_verified = true;
         } else {
             super::audit(&state, &user.username, "login_failed", "", "bad_tfa_code").await;
+            record_login_failure(&throttle_key);
             return Err(AppError::Unauthorized("验证码不正确。".to_owned()));
         }
     }
@@ -147,6 +240,7 @@ pub async fn login(
         request.device_info.os.as_str(),
     )
     .await?;
+    clear_login_failures(&throttle_key);
     Ok((StatusCode::OK, Json(payload)))
 }
 

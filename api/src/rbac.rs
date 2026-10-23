@@ -15,6 +15,7 @@ pub const PERMISSIONS: &[(&str, &str)] = &[
     ("strategy.read", "查看策略"),
     ("strategy.write", "管理策略"),
     ("audit.read", "查看日志"),
+    ("audit.manage", "管理日志（编辑备注、删除记录）"),
     ("deployment.manage", "管理客户端部署"),
     ("recording.read", "查看会话录像"),
     ("recording.manage", "管理会话录像"),
@@ -32,6 +33,7 @@ const IMPLIED: &[(&str, &str)] = &[
     ("group.write", "group.read"),
     ("address_book.write", "address_book.read"),
     ("strategy.write", "strategy.read"),
+    ("audit.manage", "audit.read"),
     ("recording.manage", "recording.read"),
     ("settings.write", "settings.read"),
 ];

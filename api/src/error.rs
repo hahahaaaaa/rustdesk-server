@@ -18,6 +18,8 @@ pub enum AppError {
     #[error("{0}")]
     Conflict(String),
     #[error("{0}")]
+    TooManyRequests(String),
+    #[error("{0}")]
     Internal(String),
     #[error(transparent)]
     Database(#[from] sqlx::Error),
@@ -31,6 +33,7 @@ impl IntoResponse for AppError {
             Self::Forbidden(message) => (StatusCode::FORBIDDEN, message.clone()),
             Self::NotFound(message) => (StatusCode::NOT_FOUND, message.clone()),
             Self::Conflict(message) => (StatusCode::CONFLICT, message.clone()),
+            Self::TooManyRequests(message) => (StatusCode::TOO_MANY_REQUESTS, message.clone()),
             Self::Database(err) => {
                 tracing::error!(error = %err, "database error");
                 (

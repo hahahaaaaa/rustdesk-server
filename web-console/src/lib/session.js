@@ -1,6 +1,9 @@
 import { computed, reactive } from 'vue'
 
 const STORAGE_KEY = 'rd-console-session-v1'
+const ACTIVITY_KEY = 'rd-console-activity-v1'
+
+export { STORAGE_KEY, ACTIVITY_KEY }
 
 function readStored() {
   try {
@@ -39,6 +42,7 @@ export function saveSession({ token, user }) {
       user: session.user,
     })
   )
+  localStorage.setItem(ACTIVITY_KEY, String(Date.now()))
 }
 
 export function clearSession() {
@@ -46,6 +50,7 @@ export function clearSession() {
   session.token = ''
   session.user = null
   localStorage.removeItem(STORAGE_KEY)
+  localStorage.removeItem(ACTIVITY_KEY)
 }
 
 export function displayName(user = session.user) {

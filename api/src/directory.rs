@@ -185,9 +185,29 @@ fn escape_filter_value(value: &str) -> String {
             b'(' => escaped.push_str("\\28"),
             b')' => escaped.push_str("\\29"),
             b'\\' => escaped.push_str("\\5c"),
-            0 => escaped.push_str("\\00"),
+            0x00..=0x1f | 0x7f..=0xff => escaped.push_str(&format!("\\{byte:02x}")),
             other => escaped.push(other as char),
         }
     }
     escaped
+}
+
+#[cfg(test)]
+mod tests {
+    use super::escape_filter_value;
+
+    #[test]
+    fn escapes_special_characters() {
+        assert_eq!(
+            escape_filter_value(r"a*b(c)d\e"),
+            r"a\2ab\28c\29d\5ce"
+        );
+    }
+
+    #[test]
+    fn escapes_control_and_non_ascii_bytes() {
+        assert_eq!(escape_filter_value("a\0b"), r"a\00b");
+        assert_eq!(escape_filter_value("张"), r"\e5\bc\a0");
+        assert_eq!(escape_filter_value("a\nb"), r"a\0ab");
+    }
 }

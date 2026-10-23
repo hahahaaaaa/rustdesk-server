@@ -17,6 +17,8 @@ use crate::models::{iso_from_secs, now_secs};
 use crate::AppState;
 
 const MAX_FILENAME_LEN: usize = 180;
+const MAX_RECORDING_BYTES: u64 = 16 * 1024 * 1024 * 1024;
+const ALLOWED_EXTENSIONS: [&str; 4] = [".mp4", ".webm", ".mkv", ".mov"];
 
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct UploadQuery {
@@ -47,6 +49,11 @@ pub async fn upload(
 
     match query.kind.trim() {
         "new" => {
+            if recording_complete(&state, &filename).await? == Some(1) {
+                return Err(AppError::Conflict(
+                    "录像已完成，不能重新上传。".to_owned(),
+                ));
+            }
             tokio::fs::write(&path, b"")
                 .await
                 .map_err(|err| AppError::Internal(format!("cannot create recording: {err}")))?;
@@ -63,7 +70,17 @@ pub async fn upload(
             .await?;
         }
         "part" | "tail" => {
-            let offset = query.offset.unwrap_or(0).max(0);
+            if recording_complete(&state, &filename).await? == Some(1) {
+                return Err(AppError::Conflict(
+                    "录像已完成，不能再写入。".to_owned(),
+                ));
+            }
+            let offset = query.offset.unwrap_or(0).max(0) as u64;
+            if offset > MAX_RECORDING_BYTES
+                || offset + body.len() as u64 > MAX_RECORDING_BYTES
+            {
+                return Err(AppError::BadRequest("录像文件超过大小限制。".to_owned()));
+            }
             let mut file = tokio::fs::OpenOptions::new()
                 .create(true)
                 .write(true)
@@ -71,7 +88,7 @@ pub async fn upload(
                 .await
                 .map_err(|err| AppError::Internal(format!("cannot open recording: {err}")))?;
             if !body.is_empty() {
-                file.seek(std::io::SeekFrom::Start(offset as u64))
+                file.seek(std::io::SeekFrom::Start(offset))
                     .await
                     .map_err(|err| AppError::Internal(format!("cannot seek recording: {err}")))?;
                 tokio::io::AsyncWriteExt::write_all(&mut file, &body)
@@ -82,7 +99,7 @@ pub async fn upload(
                 .metadata()
                 .await
                 .map(|meta| meta.len() as i64)
-                .unwrap_or(offset + body.len() as i64);
+                .unwrap_or((offset + body.len() as u64) as i64);
             let complete = if query.kind.trim() == "tail" { 1 } else { 0 };
             sqlx::query(
                 "INSERT INTO recordings (filename, size, complete, note, created_at, updated_at)
@@ -101,6 +118,11 @@ pub async fn upload(
             .await?;
         }
         "remove" => {
+            if recording_complete(&state, &filename).await? == Some(1) {
+                return Err(AppError::Conflict(
+                    "已完成录像不能通过客户端删除。".to_owned(),
+                ));
+            }
             let _ = tokio::fs::remove_file(&path).await;
             sqlx::query("DELETE FROM recordings WHERE filename = ?")
                 .bind(&filename)
@@ -349,6 +371,18 @@ pub async fn download(
     );
     out.insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
     out.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+    out.insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("private, no-store"),
+    );
+    out.insert(
+        header::REFERRER_POLICY,
+        HeaderValue::from_static("no-referrer"),
+    );
+    out.insert(
         header::CONTENT_LENGTH,
         HeaderValue::from_str(&length.to_string()).unwrap_or(HeaderValue::from_static("0")),
     );
@@ -434,7 +468,22 @@ pub fn sanitize_filename(raw: &str) -> Result<String, AppError> {
     {
         return Err(AppError::BadRequest("录像文件名无效。".to_owned()));
     }
+    let lower = trimmed.to_ascii_lowercase();
+    if !ALLOWED_EXTENSIONS
+        .iter()
+        .any(|extension| lower.ends_with(extension))
+    {
+        return Err(AppError::BadRequest("不支持的录像文件类型。".to_owned()));
+    }
     Ok(trimmed)
+}
+
+async fn recording_complete(state: &AppState, filename: &str) -> Result<Option<i64>, AppError> {
+    sqlx::query_scalar("SELECT complete FROM recordings WHERE filename = ?")
+        .bind(filename)
+        .fetch_optional(&state.db)
+        .await
+        .map_err(AppError::from)
 }
 
 fn filename_device(filename: &str) -> String {
@@ -450,5 +499,22 @@ fn require(auth: &AuthUser, permission: &str) -> Result<(), AppError> {
         Ok(())
     } else {
         Err(AppError::Forbidden("没有权限执行此操作。".to_owned()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sanitize_filename;
+
+    #[test]
+    fn rejects_path_traversal_and_unknown_extensions() {
+        assert!(sanitize_filename("../etc/passwd").is_err());
+        assert!(sanitize_filename(r"..\secret.mp4").is_ok());
+        assert_eq!(sanitize_filename(r"..\secret.mp4").unwrap(), "secret.mp4");
+        assert!(sanitize_filename("payload.html").is_err());
+        assert!(sanitize_filename("clip.mp4.exe").is_err());
+        assert_eq!(sanitize_filename(".hidden.mp4").unwrap(), "hidden.mp4");
+        assert!(sanitize_filename("incoming_123_display0.mp4").is_ok());
+        assert!(sanitize_filename("incoming_123_display0.WEBM").is_ok());
     }
 }

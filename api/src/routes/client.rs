@@ -30,7 +30,7 @@ pub async fn heartbeat(
     }
     let uuid = request.uuid.trim();
     let now = now_secs();
-    let mut existing = find_device_guid(&state, id, uuid).await?;
+    let mut existing = find_device(&state, id, uuid).await?;
     if existing.is_none() {
         let guid = uuid::Uuid::new_v4().to_string();
         let owner: Option<String> =
@@ -52,11 +52,14 @@ pub async fn heartbeat(
         .bind(now)
         .execute(&state.db)
         .await?;
-        existing = find_device_guid(&state, id, uuid).await?;
+        existing = find_device(&state, id, uuid).await?;
     }
 
     let mut response = serde_json::Map::new();
-    if let Some(guid) = existing {
+    if let Some((guid, stored_uuid)) = existing {
+        if !uuid_matches(&stored_uuid, uuid) {
+            return Ok(Json(json!({})));
+        }
         sqlx::query("UPDATE devices SET last_online = ?, updated_at = ? WHERE guid = ?")
             .bind(now)
             .bind(now)
@@ -144,7 +147,7 @@ async fn store_sysinfo(state: &AppState, body: &Value) -> Result<(), AppError> {
             .bind(id)
             .fetch_optional(&state.db)
             .await?;
-    let mut existing = find_device_guid(state, id, uuid).await?;
+    let mut existing = find_device(state, id, uuid).await?;
     if existing.is_none() {
         let guid = uuid::Uuid::new_v4().to_string();
         sqlx::query(
@@ -163,62 +166,36 @@ async fn store_sysinfo(state: &AppState, body: &Value) -> Result<(), AppError> {
         .bind(now)
         .execute(&state.db)
         .await?;
-        existing = find_device_guid(state, id, uuid).await?;
+        existing = find_device(state, id, uuid).await?;
     }
-    let existing = existing.ok_or_else(|| {
-        AppError::Internal("device row was not created by sysinfo".to_owned())
-    })?;
-
-    let id_owner: Option<String> =
-        sqlx::query_scalar("SELECT guid FROM devices WHERE id = ? AND guid <> ?")
-            .bind(id)
-            .bind(&existing)
-            .fetch_optional(&state.db)
-            .await?;
-
-    if id_owner.is_none() {
-        sqlx::query(
-            "UPDATE devices SET
-                id = ?,
-                uuid = COALESCE(NULLIF(?, ''), uuid),
-                user = COALESCE(user, ?),
-                info = ?,
-                version = ?,
-                last_online = ?,
-                updated_at = ?
-             WHERE guid = ?",
-        )
-        .bind(id)
-        .bind(uuid)
-        .bind(&owner)
-        .bind(body.to_string())
-        .bind(&version)
-        .bind(now)
-        .bind(now)
-        .bind(&existing)
-        .execute(&state.db)
-        .await?;
-    } else {
-        sqlx::query(
-            "UPDATE devices SET
-                uuid = COALESCE(NULLIF(?, ''), uuid),
-                user = COALESCE(user, ?),
-                info = ?,
-                version = ?,
-                last_online = ?,
-                updated_at = ?
-             WHERE guid = ?",
-        )
-        .bind(uuid)
-        .bind(&owner)
-        .bind(body.to_string())
-        .bind(&version)
-        .bind(now)
-        .bind(now)
-        .bind(&existing)
-        .execute(&state.db)
-        .await?;
+    let Some((guid, stored_uuid)) = existing else {
+        return Err(AppError::BadRequest(
+            "device id is not registered".to_owned(),
+        ));
+    };
+    if !uuid_matches(&stored_uuid, uuid) {
+        return Err(AppError::BadRequest("device uuid mismatch".to_owned()));
     }
+
+    sqlx::query(
+        "UPDATE devices SET
+            uuid = COALESCE(NULLIF(?, ''), uuid),
+            user = COALESCE(user, ?),
+            info = ?,
+            version = ?,
+            last_online = ?,
+            updated_at = ?
+         WHERE guid = ?",
+    )
+    .bind(uuid)
+    .bind(&owner)
+    .bind(body.to_string())
+    .bind(&version)
+    .bind(now)
+    .bind(now)
+    .bind(&guid)
+    .execute(&state.db)
+    .await?;
 
     Ok(())
 }
@@ -392,30 +369,52 @@ fn push_group_scope(qb: &mut QueryBuilder<'_, Sqlite>, auth: &AuthUser) {
     qb.push(" AND device_group_guid IS NOT NULL))");
 }
 
-async fn find_device_guid(
+async fn find_device(
     state: &AppState,
     id: &str,
     uuid: &str,
-) -> Result<Option<String>, AppError> {
-    let guid = if uuid.is_empty() {
-        sqlx::query_scalar("SELECT guid FROM devices WHERE id = ? LIMIT 1")
-            .bind(id)
-            .fetch_optional(&state.db)
-            .await?
-    } else {
-        sqlx::query_scalar(
-            "SELECT guid FROM devices
-             WHERE uuid = ? OR id = ?
-             ORDER BY CASE WHEN uuid = ? THEN 0 ELSE 1 END
-             LIMIT 1",
-        )
-        .bind(uuid)
-        .bind(id)
-        .bind(uuid)
-        .fetch_optional(&state.db)
-        .await?
+) -> Result<Option<(String, String)>, AppError> {
+    if let Some(row) = sqlx::query_as::<_, (String, String)>(
+        "SELECT guid, COALESCE(uuid, '') FROM devices WHERE id = ? LIMIT 1",
+    )
+    .bind(id)
+    .fetch_optional(&state.db)
+    .await?
+    {
+        return Ok(Some(row));
+    }
+    if uuid.is_empty() {
+        return Ok(None);
+    }
+    let Some((guid, stored_uuid)) = sqlx::query_as::<_, (String, String)>(
+        "SELECT guid, COALESCE(uuid, '') FROM devices WHERE uuid = ? LIMIT 1",
+    )
+    .bind(uuid)
+    .fetch_optional(&state.db)
+    .await?
+    else {
+        return Ok(None);
     };
-    Ok(guid)
+    let conflict: Option<i64> =
+        sqlx::query_scalar("SELECT 1 FROM devices WHERE id = ? AND guid <> ?")
+            .bind(id)
+            .bind(&guid)
+            .fetch_optional(&state.db)
+            .await?;
+    if conflict.is_some() {
+        return Ok(None);
+    }
+    sqlx::query("UPDATE devices SET id = ?, updated_at = ? WHERE guid = ?")
+        .bind(id)
+        .bind(now_secs())
+        .bind(&guid)
+        .execute(&state.db)
+        .await?;
+    Ok(Some((guid, stored_uuid)))
+}
+
+fn uuid_matches(stored: &str, provided: &str) -> bool {
+    stored.is_empty() || (!provided.is_empty() && stored == provided)
 }
 
 fn body_str<'a>(body: &'a Value, key: &str) -> &'a str {
@@ -437,4 +436,17 @@ fn text_response(status: StatusCode, body: &'static str) -> Response {
         HeaderValue::from_static("text/plain; charset=utf-8"),
     );
     response
+}
+
+#[cfg(test)]
+mod tests {
+    use super::uuid_matches;
+
+    #[test]
+    fn uuid_matches_only_when_stored_or_equal() {
+        assert!(uuid_matches("", "anything"));
+        assert!(uuid_matches("abc", "abc"));
+        assert!(!uuid_matches("abc", ""));
+        assert!(!uuid_matches("abc", "abd"));
+    }
 }
