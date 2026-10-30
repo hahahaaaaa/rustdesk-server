@@ -95,9 +95,13 @@ function handlers() {
       error.value = ''
       nextTick(() => frameEl.value?.focus())
     },
-    onDisplays: ({ displays: list, current }) => {
+    onDisplays: ({ displays: list, current, width, height }) => {
       displays.value = Array.isArray(list) ? list : []
       currentDisplay.value = Number(current || 0)
+      // 如果提供了新的分辨率，更新画布尺寸
+      if (Number(width) > 0 && Number(height) > 0) {
+        videoSize.value = { width: Number(width), height: Number(height) }
+      }
     },
     onVideoSize: (size) => {
       videoSize.value = size

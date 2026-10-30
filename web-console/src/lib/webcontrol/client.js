@@ -618,14 +618,17 @@ export class WebControlClient {
     }
     if (misc.switch_display) {
       const display = Number(misc.switch_display.display || 0)
+      const width = misc.switch_display.width || this.displays[display]?.width || 0
+      const height = misc.switch_display.height || this.displays[display]?.height || 0
       this.clearPendingDisplay()
       this.currentDisplay = display
       this.decoder?.configure(0, 0)
+      // 通知视图更新当前屏幕和分辨率
       this.emit('onDisplays', {
         displays: this.displays,
         current: display,
-        width: misc.switch_display.width,
-        height: misc.switch_display.height,
+        width,
+        height,
       })
       this.sendVideoAck()
       return
@@ -790,6 +793,12 @@ export class WebControlClient {
   switchDisplay(index) {
     const value = Number(index)
     if (!Number.isInteger(value) || value < 0) return
+    // 检查屏幕是否在线
+    if (this.displays[value] && this.displays[value].online === false) {
+      this.emit('onNotice', '该显示器已离线，无法切换。')
+      return
+    }
+    
     this.currentDisplay = value
     this.pendingDisplay = value
     this.decoder?.configure(0, 0)
@@ -803,7 +812,14 @@ export class WebControlClient {
         this.requestKeyFrame()
       }
     }, 5000)
-    this.emit('onDisplays', { displays: this.displays, current: value })
+    
+    const screen = this.displays[value]
+    this.emit('onDisplays', {
+      displays: this.displays,
+      current: value,
+      width: screen?.width || 0,
+      height: screen?.height || 0,
+    })
   }
 
   refresh() {
