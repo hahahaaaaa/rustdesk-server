@@ -963,10 +963,20 @@ export class WebControlClient {
     const y = Math.round(
       ((event.clientY - rect.top) / rect.height) * this.canvas.height
     )
-    return {
-      x: Math.max(0, Math.min(this.canvas.width - 1, x)),
-      y: Math.max(0, Math.min(this.canvas.height - 1, y)),
+    const screenX = Math.max(0, Math.min(this.canvas.width - 1, x))
+    const screenY = Math.max(0, Math.min(this.canvas.height - 1, y))
+    
+    // 获取当前显示器的偏移量
+    const currentDisplayInfo = this.displays[this.currentDisplay]
+    if (currentDisplayInfo && (currentDisplayInfo.x !== 0 || currentDisplayInfo.y !== 0)) {
+      // 将全局坐标转换为当前显示器的相对坐标
+      return {
+        x: screenX - currentDisplayInfo.x,
+        y: screenY - currentDisplayInfo.y,
+      }
     }
+    
+    return { x: screenX, y: screenY }
   }
 
   sendMouse(point, mask) {
