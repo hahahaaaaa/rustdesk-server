@@ -979,17 +979,15 @@ export class WebControlClient {
     const y = Math.round(
       ((event.clientY - rect.top) / rect.height) * this.canvas.height
     )
-    const screenX = Math.max(0, Math.min(this.canvas.width - 1, x))
-    const screenY = Math.max(0, Math.min(this.canvas.height - 1, y))
+    let screenX = Math.max(0, Math.min(this.canvas.width - 1, x))
+    let screenY = Math.max(0, Math.min(this.canvas.height - 1, y))
     
-    // 获取当前显示器的偏移量
+    // 获取当前显示器的位置信息，并转换为全局坐标
     const currentDisplayInfo = this.displays[this.currentDisplay]
-    if (currentDisplayInfo && (currentDisplayInfo.x !== 0 || currentDisplayInfo.y !== 0)) {
-      // 将全局坐标转换为当前显示器的相对坐标
-      return {
-        x: screenX - currentDisplayInfo.x,
-        y: screenY - currentDisplayInfo.y,
-      }
+    if (currentDisplayInfo) {
+      // 将局部坐标加上显示器偏移，得到全局坐标
+      screenX = screenX + (currentDisplayInfo.x || 0)
+      screenY = screenY + (currentDisplayInfo.y || 0)
     }
     
     return { x: screenX, y: screenY }
