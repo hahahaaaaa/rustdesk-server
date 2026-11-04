@@ -1,115 +1,57 @@
-# RustDesk Server Program
+# RustDesk Server（含 Web 管理控制台）
 
-[![build](https://github.com/rustdesk/rustdesk-server/actions/workflows/build.yaml/badge.svg)](https://github.com/rustdesk/rustdesk-server/actions/workflows/build.yaml)
+基于 [rustdesk-server](https://github.com/rustdesk/rustdesk-server) 的下游分支：`hbbs` / `hbbr` 的协议与配置保持上游行为，在此基础上补上了 Web 管理控制台、浏览器网页远控和单镜像部署。
 
-[**Download**](https://github.com/rustdesk/rustdesk-server/releases)
+## 加了什么
 
-[**Manual**](https://rustdesk.com/docs/en/self-host/)
+- **Web 管理控制台**（`web-console/`）：Vue 3 + Vite，中文界面，和 API 同源跑在 `21114`。页面有设备、分组、地址簿、策略、日志、审计、用户、角色、部署、录制、中继、集成、设置、网页远控。
+- **管理 API**（`api/`）：Rust + Axum + SQLite，JWT 登录、RBAC 权限、审计上报、录制分片、部署令牌。
+- **浏览器网页远控**：设备菜单 → 「网页远控」（或 `/#/control/<guid>`），不装客户端直接操作。浏览器只连 API，由 API 代理到 hbbs/hbbr，视频用 WebCodecs 解码，支持多屏切换与鼠标坐标校正、卡顿自动恢复。要求 HTTPS + 新版 Chrome/Edge，且 hbbs 使用默认密钥对。
+- **Pro 等效功能**：审计日志与告警邮件、客户端部署令牌、会话录制上传与回放、多中继管理、OIDC/LDAP/SMTP、邮件验证码登录、TOTP、自定义管理员角色。
+- **单镜像多架构**：一个 s6 容器同时跑 hbbs + hbbr + api + console，数据都在 `/data`，镜像发布到 `ghcr.io/hahahaaaaa/rustdesk-server`（amd64/arm64/armv7）。
+- **WebSocket 注册**：hbbs/hbbr 支持 `/ws/id`、`/ws/relay`，附 nginx 反代示例 `docs/nginx/rustdesk.conf`。
 
-[**Configuration & environment variables**](docs/environment-variables.md)
-
-[**FAQ**](https://github.com/rustdesk/rustdesk/wiki/FAQ)
-
-[**How to migrate OSS to Pro**](https://rustdesk.com/docs/en/self-host/rustdesk-server-pro/installscript/#convert-from-open-source)
-
-Self-host your own RustDesk server, it is free and open source.
-
-> [!IMPORTANT]
-> **Need more features?** [RustDesk Server Pro](https://rustdesk.com/pricing.html) might suit you better.
->
-> **Want to develop your own server?** Start with [rustdesk-server-demo](https://github.com/rustdesk/rustdesk-server-demo), a simpler starting point than this repository.
-
-## How to build manually
+## 快速开始
 
 ```bash
-cargo build --release
-```
-
-Three executables will be generated in target/release.
-
-- hbbs - RustDesk ID/Rendezvous server
-- hbbr - RustDesk relay server
-- rustdesk-utils - RustDesk CLI utilities
-
-The management API and browser console are separate projects:
-
-```bash
-cargo build --release --manifest-path api/Cargo.toml
-cd web-console && npm ci && npm run build
-```
-
-`rustdesk-api` listens on port `21114` by default and serves
-`web-console/dist` when `API_CONSOLE_DIR` points at it. See
-[Management API and web console](#management-api-and-web-console).
-
-You can find updated binaries on the [Releases](https://github.com/rustdesk/rustdesk-server/releases) page.
-
-## Configuration
-
-`hbbs` and `hbbr` can be configured with command-line flags, environment
-variables, or an `.env` / config file. Run `hbbs --help` or `hbbr --help` to see
-the available flags.
-
-The most common options:
-
-| Option | Flag | Env var | Applies to | Purpose |
-| --- | --- | --- | --- | --- |
-| Key | `-k` | `KEY` | hbbs, hbbr | `hbbs` loads/generates one by default |
-| Bind address | `-b` | `BIND` | hbbs, hbbr | Local IP address to listen on (default: all interfaces; requires 1.1.17+) |
-| Port | `-p` | `PORT` | hbbs, hbbr | Listening port (hbbs `21116`, hbbr `21117`) |
-| Relay servers | `-r` | `RELAY-SERVERS` | hbbs | Override when the relay uses a different address or a non-standard port |
-| Force relay | — | `ALWAYS_USE_RELAY` | hbbs | `Y` disables direct connections |
-| Log level | — | `RUST_LOG` | hbbs, hbbr | e.g. `debug` (default `info`) |
-
-See **[docs/environment-variables.md](docs/environment-variables.md)** for the
-full list of variables, the file/flag/env precedence rules, database and relay
-bandwidth tuning, Docker image variables, and examples.
-
-## Management API and web console
-
-The s6 supervisor image built by the "Docker image" workflow bundles `hbbs`,
-`hbbr`, `rustdesk-api`, and the browser console. It keeps the server keys and
-the API database in `/data`. All components run in this single container; no
-separate API or console image is published, and no server addresses need to be
-configured: the console always uses the address it was opened with, and
-RustDesk clients derive the relay from the ID server host. The multi-arch image
-is published to GitHub Container Registry as
-`ghcr.io/hahahaaaaa/rustdesk-server:latest` (`linux/amd64`, `linux/arm64`,
-`linux/arm/v7`):
-
-```bash
-# Set API_ADMIN_PASSWORD before the first start.
+# 先把 docker-compose.yml 里的 API_ADMIN_PASSWORD 改掉
 docker compose up -d
 ```
 
-The package is public, so `docker compose up -d` pulls it anonymously. If you
-switch the package to private in its GitHub package settings, run
-`docker login ghcr.io` first with a personal access token that has
-`read:packages`.
+打开 `http://<服务器>:21114/`，用 `admin` 登录。镜像公开，可直接拉取。
 
-Open `http://<server>:21114/` to sign in with the administrator account; the
-console authenticates against its own origin, so there is no server address
-field. Set `API_ADMIN_PASSWORD` (and
-optionally `API_ADMIN_USERNAME`) on the first start; if the password is omitted,
-a random one is printed once in `docker logs`. Port `21114` must be reachable by
-RustDesk clients because they use the API for heartbeat and configuration.
+端口：`21114` 控制台/API（客户端心跳和配置也走这里）、`21115` NAT 类型测试、`21116` ID 注册（TCP+UDP）、`21117` 中继、`21118/21119` WebSocket（用反代或客户端开启 WebSocket 时才需要）。
 
-The console also provides **browser remote control**: select a device and choose
-网页远控 to operate it without installing a client. The browser connects only to
-the API; the API proxies the RustDesk protocol to `hbbs`/`hbbr` inside the
-container. This feature needs HTTPS (WebCodecs is restricted to secure
-contexts), a current Chrome or Edge, and an `hbbs` key pair (the default).
-See the [web control notes](docs/environment-variables.md#browser-remote-control).
+首次启动若未设置 `API_ADMIN_PASSWORD`，随机密码只在日志里打印一次：
 
-Additional Pro-equivalent administration is built in: connection/file/alarm
-audit logs with alarm mail, deployment tokens for `--deploy`/`--assign`, session
-recording upload and playback, multiple relay servers, OIDC/LDAP/SMTP
-configuration, email-code login, and role-based access control. See
-[Pro-equivalent administration features](docs/environment-variables.md#pro-equivalent-administration-features).
+```bash
+docker logs rustdesk-server 2>&1 | grep "created the initial administrator"
+```
 
-All API variables are documented in
-[docs/environment-variables.md](docs/environment-variables.md#management-api--web-console-variables).
+安全提示：`21114` 暴露到公网时，`/api/audit/*`、`/api/record`、`/api/devices/deploy` 这些面向客户端的接口用部署令牌或设备签名认证（沿用开源客户端协议，没法用会话），不需要匿名上报就把它限制在内网。
 
-## Installation
+## 自己构建
 
-Please follow this [doc](https://rustdesk.com/docs/en/self-host/rustdesk-server-oss/)
+```bash
+cargo build --release                                  # hbbs / hbbr / rustdesk-utils
+cargo build --release --manifest-path api/Cargo.toml   # rustdesk-api
+cd web-console && npm ci && npm run build              # 控制台静态文件
+```
+
+`rustdesk-api` 默认监听 `21114`，把 `API_CONSOLE_DIR` 指向 `web-console/dist` 就能同端口提供控制台。
+
+## 配置
+
+`hbbs` / `hbbr` 支持命令行参数、环境变量和 `.env` 文件，`--help` 可看全部参数。常用的有 `-k` 密钥、`-p` 端口、`-r` 中继地址、`ALWAYS_USE_RELAY`、`RUST_LOG`。
+
+完整变量（Docker 镜像变量、API 与控制台变量、网页远控参数）见 [docs/environment-variables.md](docs/environment-variables.md)。
+
+## 与上游的差异
+
+- 上游只有 `hbbs` / `hbbr` / `rustdesk-utils`，本分支多了 `rustdesk-api` 和 Web 控制台；
+- 上游镜像不支持 `RELAY` / `ENCRYPTED_ONLY` / `KEY_PUB` / `KEY_PRIV`，本分支的 s6 镜像支持；
+- API 去掉了编译期 sqlx 查询，可离线交叉编译；`docker-classic/` 保留上游经典镜像的构建方式。
+
+## 许可证
+
+AGPL-3.0，见 [LICENSE](LICENSE)。
