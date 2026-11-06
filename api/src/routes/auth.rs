@@ -89,6 +89,16 @@ fn record_login_failure(key: &str) {
     entry.count = entry.count.saturating_add(1);
 }
 
+fn burn_password_check(password: &str) {
+    static DUMMY_HASH: OnceLock<Option<String>> = OnceLock::new();
+    let hash = DUMMY_HASH.get_or_init(|| {
+        bcrypt::hash(uuid::Uuid::new_v4().simple().to_string(), bcrypt::DEFAULT_COST).ok()
+    });
+    if let Some(hash) = hash {
+        let _ = bcrypt::verify(password, hash);
+    }
+}
+
 fn clear_login_failures(key: &str) {
     if let Ok(mut failures) = login_failures().lock() {
         failures.remove(key);
@@ -141,6 +151,11 @@ pub async fn login(
                     }
                 }
             } else {
+                // Spend the same bcrypt time as a real check so response timing
+                // does not reveal whether the account exists.
+                if !request.password.is_empty() {
+                    burn_password_check(&request.password);
+                }
                 super::audit(&state, username, "login_failed", "", "unknown_user").await;
                 record_login_failure(&throttle_key);
                 return Err(AppError::Unauthorized("用户名或密码错误。".to_owned()));

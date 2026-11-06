@@ -9,7 +9,9 @@ import {
   buttonMask,
   isModifierCode,
   keyDescriptor,
+  lockModifiers,
   modifierList,
+  windowsScanCode,
 } from './keys'
 import { IdPk } from './proto'
 import { createKeyExchange, decodeServerKey, initSodium, verifySigned } from './secure'
@@ -49,6 +51,7 @@ const LOGIN_ERRORS = {
   'The main window is not open': '对方 RustDesk 主窗口未打开，无法发起连接。',
   'No permission of keyboard': '对方未授予键盘控制权限。',
   'No permission of clipboard': '对方未授予剪贴板权限。',
+  'No permission of file transfer': '对方未开启文件传输权限。',
 }
 
 const PHASE_TEXT = {
@@ -94,6 +97,9 @@ export class WebControlClient {
     this.session = session
     this.handlers = handlers
     this.deviceId = session?.device?.id || ''
+    // rendezvous ConnType: 0 = remote control, 1 = file transfer.
+    this.connType = 0
+    this.lastPassword = ''
     this.phase = 'idle'
     this.error = ''
     this.closed = false
@@ -111,6 +117,10 @@ export class WebControlClient {
     this.currentDisplay = 0
     this.pendingDisplay = null
     this.pendingDisplayTimer = 0
+    // "All displays" mode: one decoder per display, composed on one canvas by display position.
+    this.viewAll = false
+    this.multiDecoders = new Map()
+    this.layout = null
     this.quality = 3
     this.cursorCache = new Map()
     this.currentCursorId = ''
@@ -192,7 +202,7 @@ export class WebControlClient {
         id: this.deviceId,
         nat_type: 2,
         force_relay: true,
-        conn_type: 0,
+        conn_type: this.connType,
         licence_key: this.session.license_key || '',
       },
     })
@@ -449,11 +459,16 @@ export class WebControlClient {
       displays: this.displays,
       current: this.currentDisplay,
     })
+    this.refreshViewAllLayout()
   }
 
   handleVideoFrame(frame) {
     this.lastVideoAt = Date.now()
     const display = Number(frame.display || 0)
+    if (this.viewAll) {
+      this.handleMultiFrame(display, frame)
+      return
+    }
     if (this.pendingDisplay !== null) {
       if (display !== this.pendingDisplay) {
         // Stale frames from the previous display while the switch is in flight.
@@ -485,6 +500,158 @@ export class WebControlClient {
 
   sendVideoAck() {
     this.send({ misc: { video_received: true } })
+  }
+
+  handleMultiFrame(display, frame) {
+    const stream = frame.vp9s
+    const region = this.layout?.regions.get(display)
+    if (stream && region) {
+      let decoder = this.multiDecoders.get(display)
+      if (!decoder) {
+        decoder = this.createMultiDecoder(display)
+        this.multiDecoders.set(display, decoder)
+      }
+      for (const encoded of stream.frames || []) {
+        decoder.decode(toBytes(encoded.data), encoded.key === true)
+      }
+    }
+    this.sendVideoAck()
+  }
+
+  createMultiDecoder(display) {
+    return new Vp9Decoder({
+      onFrame: (frame) => this.drawMultiFrame(display, frame),
+      onError: () => this.onDecoderError(),
+      onNeedKeyFrame: () => this.requestKeyFrame(),
+    })
+  }
+
+  // Bounding box of the online displays in the peer's global coordinate space.
+  computeLayout() {
+    const regions = new Map()
+    let minX = Infinity
+    let minY = Infinity
+    let maxX = -Infinity
+    let maxY = -Infinity
+    this.displays.forEach((info, index) => {
+      if (info?.online === false) return
+      const width = Number(info?.width || 0)
+      const height = Number(info?.height || 0)
+      if (width <= 0 || height <= 0) return
+      const x = Number(info.x || 0)
+      const y = Number(info.y || 0)
+      regions.set(index, { x, y, width, height })
+      minX = Math.min(minX, x)
+      minY = Math.min(minY, y)
+      maxX = Math.max(maxX, x + width)
+      maxY = Math.max(maxY, y + height)
+    })
+    if (regions.size < 2) return null
+    return { regions, minX, minY, width: maxX - minX, height: maxY - minY }
+  }
+
+  applyLayout() {
+    if (!this.canvas || !this.context || !this.layout) return
+    const { width, height } = this.layout
+    if (this.canvas.width !== width || this.canvas.height !== height) {
+      this.canvas.width = width
+      this.canvas.height = height
+    }
+    this.context.fillStyle = '#000'
+    this.context.fillRect(0, 0, width, height)
+    this.videoSize = { width, height }
+    this.emit('onVideoSize', this.videoSize)
+  }
+
+  drawMultiFrame(display, frame) {
+    if (!this.canvas || !this.context || !this.layout || !this.viewAll) return
+    const region = this.layout.regions.get(display)
+    if (!region) return
+    // Scale into the display's slot in case the frame size differs from the reported size.
+    this.context.drawImage(
+      frame,
+      region.x - this.layout.minX,
+      region.y - this.layout.minY,
+      region.width,
+      region.height
+    )
+    this.lastDrawAt = Date.now()
+    this.clearStall()
+    if (!this.loggedIn) this.loggedIn = true
+    this.emit('onFrame')
+  }
+
+  canViewAll() {
+    return this.computeLayout() !== null
+  }
+
+  setViewAll(enabled) {
+    if (this.closed || !this.wire) return false
+    if (!enabled) {
+      if (!this.viewAll) return true
+      this.viewAll = false
+      this.closeMultiDecoders()
+      this.layout = null
+      const display = this.displays[this.currentDisplay]?.online === false ? 0 : this.currentDisplay
+      this.switchDisplay(display)
+      return true
+    }
+    const layout = this.computeLayout()
+    if (!layout) {
+      this.emit('onNotice', '只有一个在线显示器，无法同时显示全部屏幕。')
+      return false
+    }
+    this.clearPendingDisplay()
+    this.viewAll = true
+    this.layout = layout
+    this.closeMultiDecoders()
+    this.decoder?.configure(0, 0)
+    this.applyLayout()
+    this.send({ misc: { capture_displays: { set: [...layout.regions.keys()] } } })
+    this.requestKeyFrame()
+    this.emit('onDisplays', {
+      displays: this.displays,
+      current: this.currentDisplay,
+      viewAll: true,
+    })
+    return true
+  }
+
+  // Re-apply the layout after the peer reports changed displays.
+  refreshViewAllLayout() {
+    if (!this.viewAll) return
+    const layout = this.computeLayout()
+    if (!layout) {
+      this.viewAll = false
+      this.closeMultiDecoders()
+      this.layout = null
+      this.emit('onNotice', '在线显示器不足两个，已切回单屏显示。')
+      this.switchDisplay(0)
+      return
+    }
+    this.layout = layout
+    this.applyLayout()
+    this.send({ misc: { capture_displays: { set: [...layout.regions.keys()] } } })
+    this.requestKeyFrame()
+  }
+
+  closeMultiDecoders() {
+    for (const decoder of this.multiDecoders.values()) {
+      try {
+        decoder.close()
+      } catch {
+        // Ignore decoder close failures.
+      }
+    }
+    this.multiDecoders.clear()
+  }
+
+  resetDecoders() {
+    if (this.viewAll) {
+      for (const decoder of this.multiDecoders.values()) decoder.configure(0, 0)
+    } else {
+      this.decoder?.configure(0, 0)
+    }
   }
 
   requestKeyFrame() {
@@ -552,7 +719,7 @@ export class WebControlClient {
       return
     }
     this.lastRecoverAt = now
-    this.decoder?.configure(0, 0)
+    this.resetDecoders()
     this.send({ misc: { refresh_video: true } })
     if (this.closed) return
     this.stallTimer = setTimeout(() => {
@@ -591,7 +758,7 @@ export class WebControlClient {
   }
 
   drawFrame(frame) {
-    if (!this.canvas || !this.context) return
+    if (!this.canvas || !this.context || this.viewAll) return
     const width = frame.displayWidth
     const height = frame.displayHeight
     if (!width || !height) return
@@ -620,6 +787,16 @@ export class WebControlClient {
       const display = Number(misc.switch_display.display || 0)
       const width = misc.switch_display.width || this.displays[display]?.width || 0
       const height = misc.switch_display.height || this.displays[display]?.height || 0
+      if (this.viewAll) {
+        // In all-displays mode this reports a display's new size; keep composing all of them.
+        const info = this.displays[display]
+        if (info && width && height && (info.width !== width || info.height !== height)) {
+          this.displays[display] = { ...info, width, height }
+          this.refreshViewAllLayout()
+        }
+        this.sendVideoAck()
+        return
+      }
       this.clearPendingDisplay()
       this.currentDisplay = display
       this.decoder?.configure(0, 0)
@@ -728,6 +905,7 @@ export class WebControlClient {
     }
     const h1 = await sha256(concatBytes(new TextEncoder().encode(value), new TextEncoder().encode(this.hash.salt)))
     const h2 = await sha256(concatBytes(h1, new TextEncoder().encode(this.hash.challenge)))
+    this.lastPassword = value
     this.sendLogin(h2)
   }
 
@@ -797,6 +975,11 @@ export class WebControlClient {
     if (this.displays[value] && this.displays[value].online === false) {
       this.emit('onNotice', '该显示器已离线，无法切换。')
       return
+    }
+    if (this.viewAll) {
+      this.viewAll = false
+      this.closeMultiDecoders()
+      this.layout = null
     }
     
     this.currentDisplay = value
@@ -888,6 +1071,33 @@ export class WebControlClient {
     if (!this.loggedIn || !this.wire || this.closed) return false
     if (event.isComposing || event.keyCode === 229) return false
     const code = event.code || ''
+    // Legacy mode makes a Windows peer type characters with KEYEVENTF_UNICODE, which
+    // bypasses its input method, so Chinese IME never sees the keys. Map mode sends
+    // physical scan codes that the peer's IME handles like local typing.
+    // Caps Lock and Num Lock stay on the legacy path: Map mode re-syncs lock state from
+    // the event's modifiers before pressing the key, which would toggle them twice.
+    const scanCode =
+      this.peerPlatform === 'Windows' && code !== 'CapsLock' && code !== 'NumLock'
+        ? windowsScanCode(code)
+        : null
+    if (scanCode !== null) {
+      const modifiers = lockModifiers(event)
+      if (down) {
+        this.pressedKeys.set(code, { descriptor: { chr: scanCode }, modifiers, mode: 1 })
+      } else {
+        this.pressedKeys.delete(code)
+      }
+      this.send({
+        key_event: {
+          chr: scanCode,
+          down,
+          press: false,
+          mode: 1,
+          modifiers,
+        },
+      })
+      return true
+    }
     const descriptor = keyDescriptor(event)
     if (descriptor) {
       if (down) {
@@ -957,7 +1167,7 @@ export class WebControlClient {
               ...pressed.descriptor,
               down: false,
               press: false,
-              mode: 0,
+              mode: pressed.mode ?? 0,
               modifiers: pressed.modifiers,
             },
           })
@@ -981,6 +1191,11 @@ export class WebControlClient {
     )
     let screenX = Math.max(0, Math.min(this.canvas.width - 1, x))
     let screenY = Math.max(0, Math.min(this.canvas.height - 1, y))
+
+    if (this.viewAll && this.layout) {
+      // The composed canvas starts at the top-left of the combined display area.
+      return { x: screenX + this.layout.minX, y: screenY + this.layout.minY }
+    }
     
     // 获取当前显示器的位置信息，并转换为全局坐标
     const currentDisplayInfo = this.displays[this.currentDisplay]
@@ -1102,6 +1317,8 @@ export class WebControlClient {
       // Ignore decoder close failures.
     }
     this.decoder = null
+    this.closeMultiDecoders()
+    this.layout = null
   }
 }
 

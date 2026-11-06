@@ -17,8 +17,10 @@ mod users;
 mod webcontrol;
 
 use axum::{
-    extract::DefaultBodyLimit,
-    http::{HeaderValue, StatusCode},
+    extract::{DefaultBodyLimit, Request},
+    http::{header, HeaderName, HeaderValue, StatusCode},
+    middleware::{self, Next},
+    response::Response,
     routing::{delete, get, patch, post, put},
     Json, Router,
 };
@@ -236,7 +238,7 @@ pub fn router(state: AppState) -> Router {
         .layer(cors)
         .with_state(state.clone());
 
-    match state.cfg.console_dir.as_deref() {
+    let app = match state.cfg.console_dir.as_deref() {
         Some(dir) => {
             let index = format!("{dir}/index.html");
             app.fallback_service(
@@ -244,7 +246,53 @@ pub fn router(state: AppState) -> Router {
             )
         }
         None => app.fallback(get(index_info)),
+    };
+    app.layer(middleware::from_fn(security_headers))
+}
+
+/// Content-Security-Policy for the console bundle. protobufjs generates its
+/// codecs with `Function()` and libsodium loads WebAssembly, which is why
+/// `unsafe-eval` and `wasm-unsafe-eval` are required; inline and third-party
+/// scripts stay blocked.
+const CONSOLE_CSP: &str = "default-src 'self'; \
+    script-src 'self' 'unsafe-eval' 'wasm-unsafe-eval'; \
+    style-src 'self' 'unsafe-inline'; \
+    img-src 'self' data: blob:; \
+    font-src 'self' data:; \
+    connect-src 'self'; \
+    worker-src 'self' blob:; \
+    object-src 'none'; \
+    base-uri 'self'; \
+    form-action 'self'; \
+    frame-ancestors 'none'";
+
+async fn security_headers(request: Request, next: Next) -> Response {
+    // The OIDC callback page under /api uses a small inline script, so the
+    // console CSP is only applied to the console bundle itself.
+    let console_page = !request.uri().path().starts_with("/api/");
+    let mut response = next.run(request).await;
+    let headers = response.headers_mut();
+    let defaults = [
+        (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+        (header::X_FRAME_OPTIONS, "DENY"),
+        (header::REFERRER_POLICY, "no-referrer"),
+        (
+            HeaderName::from_static("permissions-policy"),
+            "camera=(), microphone=(), geolocation=(), payment=(), usb=()",
+        ),
+    ];
+    for (name, value) in defaults {
+        if !headers.contains_key(&name) {
+            headers.insert(name, HeaderValue::from_static(value));
+        }
     }
+    if console_page && !headers.contains_key(header::CONTENT_SECURITY_POLICY) {
+        headers.insert(
+            header::CONTENT_SECURITY_POLICY,
+            HeaderValue::from_static(CONSOLE_CSP),
+        );
+    }
+    response
 }
 
 async fn health() -> Json<serde_json::Value> {

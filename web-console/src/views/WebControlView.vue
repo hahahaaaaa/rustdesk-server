@@ -7,6 +7,7 @@ import {
   Clipboard,
   Copy,
   Expand,
+  FolderOpen,
   Loader2,
   Lock,
   LogOut,
@@ -17,6 +18,7 @@ import {
   Shrink,
   X,
 } from 'lucide-vue-next'
+import FileTransferPanel from '../components/FileTransferPanel.vue'
 import { getApi } from '../lib/api'
 import { WebControlClient } from '../lib/webcontrol/client'
 import { formatId } from '../lib/format'
@@ -41,6 +43,7 @@ const hasVideo = ref(false)
 const videoSize = ref({ width: 0, height: 0 })
 const displays = ref([])
 const currentDisplay = ref(0)
+const viewAll = ref(false)
 const quality = ref(3)
 const isFullscreen = ref(false)
 const stallKind = ref('')
@@ -55,6 +58,11 @@ const clipboardOpen = ref(false)
 const remoteClipboard = ref('')
 const clipboardDraft = ref('')
 
+// The panel stays mounted after first open so transfers survive hiding it.
+const fileMounted = ref(false)
+const fileOpen = ref(false)
+const filePassword = ref('')
+
 let client = null
 let disposed = false
 
@@ -68,6 +76,9 @@ const statusLabel = computed(() => {
   if (connected.value) return '已连接'
   return phaseText.value
 })
+const onlineDisplayCount = computed(
+  () => displays.value.filter((display) => display.online !== false).length
+)
 const displayOptions = computed(() =>
   displays.value.map((display, index) => ({
     value: index,
@@ -98,6 +109,7 @@ function handlers() {
     onDisplays: ({ displays: list, current, width, height }) => {
       displays.value = Array.isArray(list) ? list : []
       currentDisplay.value = Number(current || 0)
+      viewAll.value = client?.viewAll === true
       // 如果提供了新的分辨率，更新画布尺寸
       if (Number(width) > 0 && Number(height) > 0) {
         videoSize.value = { width: Number(width), height: Number(height) }
@@ -154,8 +166,11 @@ async function bootstrap() {
   passwordOpen.value = false
   password.value = ''
   passwordWrong.value = false
+  fileOpen.value = false
+  fileMounted.value = false
   displays.value = []
   currentDisplay.value = 0
+  viewAll.value = false
   videoSize.value = { width: 0, height: 0 }
   phaseText.value = '正在创建远控会话…'
 
@@ -229,7 +244,12 @@ function setQuality(value) {
 }
 
 function switchDisplay(value) {
+  if (value === 'all') {
+    if (client?.setViewAll(true)) viewAll.value = true
+    return
+  }
   const index = Number(value)
+  viewAll.value = false
   currentDisplay.value = index
   client?.switchDisplay(index)
 }
@@ -269,7 +289,21 @@ async function toggleFullscreen() {
 
 function openClipboard() {
   clipboardDraft.value = remoteClipboard.value
+  fileOpen.value = false
   clipboardOpen.value = true
+}
+
+function toggleFiles() {
+  if (fileOpen.value) {
+    fileOpen.value = false
+    return
+  }
+  if (!fileMounted.value) {
+    filePassword.value = client?.lastPassword || ''
+    fileMounted.value = true
+  }
+  clipboardOpen.value = false
+  fileOpen.value = true
 }
 
 async function copyRemoteClipboard() {
@@ -423,7 +457,12 @@ onBeforeUnmount(() => {
       <div class="wc-tools">
         <label v-if="displayOptions.length > 1" class="wc-select" title="切换显示器">
           <Monitor :size="15" />
-          <select :value="currentDisplay" :disabled="!connected" @change="switchDisplay($event.target.value)">
+          <select
+            :value="viewAll ? 'all' : currentDisplay"
+            :disabled="!connected"
+            @change="switchDisplay($event.target.value)"
+          >
+            <option v-if="onlineDisplayCount > 1" value="all">全部屏幕</option>
             <option v-for="display in displayOptions" :key="display.value" :value="display.value">
               {{ display.label }}{{ display.online ? '' : '（离线）' }}
             </option>
@@ -438,6 +477,9 @@ onBeforeUnmount(() => {
         </label>
         <button class="wc-icon" type="button" title="剪贴板" :disabled="!connected" @click="openClipboard">
           <Clipboard :size="17" />
+        </button>
+        <button class="wc-icon" type="button" title="文件传输" :disabled="!connected" @click="toggleFiles">
+          <FolderOpen :size="17" />
         </button>
         <button class="wc-icon" type="button" title="发送 Ctrl+Alt+Del" :disabled="!connected" @click="ctrlAltDel">
           <Power :size="17" />
@@ -588,6 +630,14 @@ onBeforeUnmount(() => {
       </section>
       <p class="wc-clip-tip">发送后，可在远程设备中使用 Ctrl+V 粘贴。</p>
     </div>
+
+    <FileTransferPanel
+      v-if="fileMounted"
+      v-show="fileOpen"
+      :guid="guid"
+      :password="filePassword"
+      @close="fileOpen = false"
+    />
 
     <div v-if="passwordOpen" class="wc-modal-scrim">
       <div class="wc-modal" role="dialog" aria-modal="true" aria-label="连接密码">

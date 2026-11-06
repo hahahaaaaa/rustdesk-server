@@ -728,6 +728,18 @@ export async function exchangeOidcCode(code) {
     throw new ApiError('无法连接服务器，请稍后重试。')
   }
   const data = await parseResponse(response)
+  // Accounts with TOTP or email verification still need their second factor.
+  if (
+    !data?.access_token &&
+    (data?.type === 'email_check' || data?.type === 'tfa_check')
+  ) {
+    return {
+      tfaRequired: true,
+      tfaType: data.tfa_type || 'totp',
+      challenge: data.secret || '',
+      user: data.user || null,
+    }
+  }
   if (!data?.access_token) throw new ApiError('单点登录未返回访问令牌。')
   return { token: data.access_token, user: mapUser(data.user) }
 }

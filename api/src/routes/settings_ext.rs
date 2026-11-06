@@ -165,18 +165,30 @@ async fn resolve_smtp(
             .unwrap_or(stored)
             .to_owned()
     };
+    let host = pick(&body.host, &stored_host);
+    let port = body
+        .port
+        .unwrap_or_else(|| stored_port.parse().unwrap_or(587))
+        .clamp(1, 65535) as u16;
+    let password = match body.password.clone().filter(|value| !value.is_empty()) {
+        Some(value) => value,
+        None => {
+            // Never send the stored password to a server other than the saved one.
+            if !stored_password.is_empty()
+                && (host != stored_host || port != stored_port.parse().unwrap_or(587))
+            {
+                return Err(AppError::BadRequest(
+                    "更换了 SMTP 服务器或端口，请重新输入密码后再测试。".to_owned(),
+                ));
+            }
+            stored_password
+        }
+    };
     let config = SmtpConfig {
-        host: pick(&body.host, &stored_host),
-        port: body
-            .port
-            .unwrap_or_else(|| stored_port.parse().unwrap_or(587))
-            .clamp(1, 65535) as u16,
+        host,
+        port,
         username: pick(&body.username, &stored_username),
-        password: body
-            .password
-            .clone()
-            .filter(|value| !value.is_empty())
-            .unwrap_or(stored_password),
+        password,
         from: pick(&body.from, &stored_from),
         from_name: pick(&body.from_name, &stored_from_name),
         encryption: {
@@ -325,13 +337,34 @@ pub async fn test_ldap(
             .unwrap_or(stored)
             .to_owned()
     };
+    let host = pick(&body.settings.host, &stored_host);
+    let port = body
+        .settings
+        .port
+        .unwrap_or_else(|| stored_port.parse().unwrap_or(389))
+        .clamp(1, 65535) as u16;
+    let bind_password = match body
+        .settings
+        .bind_password
+        .clone()
+        .filter(|value| !value.is_empty())
+    {
+        Some(value) => value,
+        None => {
+            // Never send the stored bind password to a server other than the saved one.
+            if !stored_password.is_empty()
+                && (host != stored_host || port != stored_port.parse().unwrap_or(389))
+            {
+                return Err(AppError::BadRequest(
+                    "更换了 LDAP 服务器或端口，请重新输入绑定密码后再测试。".to_owned(),
+                ));
+            }
+            stored_password
+        }
+    };
     let config = LdapConfig {
-        host: pick(&body.settings.host, &stored_host),
-        port: body
-            .settings
-            .port
-            .unwrap_or_else(|| stored_port.parse().unwrap_or(389))
-            .clamp(1, 65535) as u16,
+        host,
+        port,
         encryption: {
             let value = pick(&body.settings.encryption, &stored_encryption);
             if value.is_empty() {
@@ -341,12 +374,7 @@ pub async fn test_ldap(
             }
         },
         bind_dn: pick(&body.settings.bind_dn, &stored_bind_dn),
-        bind_password: body
-            .settings
-            .bind_password
-            .clone()
-            .filter(|value| !value.is_empty())
-            .unwrap_or(stored_password),
+        bind_password,
         base_dn: pick(&body.settings.base_dn, &stored_base_dn),
         user_filter: {
             let value = pick(&body.settings.user_filter, &stored_filter);

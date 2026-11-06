@@ -117,11 +117,14 @@ pub async fn update_user(
         if !password.is_empty() {
             validate_password(password)?;
             let password_hash = hash_password(password).await?;
+            let now = now_secs();
+            // Changing the password signs the user out of every existing session.
             sqlx::query(
-                "UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?",
+                "UPDATE users SET password_hash = ?, tokens_valid_after = ?, updated_at = ? WHERE id = ?",
             )
             .bind(password_hash)
-            .bind(now_secs())
+            .bind(now)
+            .bind(now)
             .bind(id)
             .execute(&state.db)
             .await?;

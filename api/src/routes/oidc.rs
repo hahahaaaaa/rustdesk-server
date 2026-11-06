@@ -398,7 +398,12 @@ async fn link_or_provision(
     }
 
     if let Some(existing) = super::auth::find_user(state, username).await? {
+        // Only link on an email the identity provider has verified, and never link
+        // an administrator automatically: an IdP that lets users pick their own
+        // username and email would otherwise allow account takeover.
         if existing.oidc_subject.is_empty()
+            && email_verified
+            && existing.is_admin == 0
             && !email.is_empty()
             && !existing.email.is_empty()
             && existing.email.eq_ignore_ascii_case(email)
@@ -576,7 +581,8 @@ pub async fn web_exchange(
     if consumed.rows_affected() == 0 {
         return Err(AppError::Unauthorized("登录会话无效或已过期。".to_owned()));
     }
-    let payload = super::auth::complete_login(&state, &user, "", "", "oidc-web").await?;
+    // Single sign-on still has to pass the account's own TOTP / email verification.
+    let payload = super::auth::complete_or_challenge(&state, &user, "", "", "oidc-web").await?;
     Ok(Json(payload))
 }
 

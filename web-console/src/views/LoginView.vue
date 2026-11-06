@@ -81,6 +81,18 @@ async function completeOidc(code) {
   busy.value = true
   try {
     const result = await exchangeOidcCode(code)
+    if (result.tfaRequired) {
+      // Continue on the normal verification step; the challenge proves the SSO login.
+      mode.value = 'password'
+      username.value = result.user?.name || ''
+      password.value = ''
+      tfaChallenge.value = result.challenge
+      tfaType.value = result.tfaType
+      tfaUser.value = result.user
+      tfaCode.value = ''
+      busy.value = false
+      return
+    }
     saveSession(result)
     finish()
   } catch (e) {
@@ -319,7 +331,6 @@ function switchMode(next) {
                   v-model="username"
                   class="input"
                   autocomplete="username"
-                  placeholder="admin"
                 />
               </div>
               <div class="field">
@@ -331,7 +342,6 @@ function switchMode(next) {
                     class="input"
                     :type="showPassword ? 'text' : 'password'"
                     autocomplete="current-password"
-                    placeholder="••••••••"
                     style="padding-right: 38px"
                   />
                   <button

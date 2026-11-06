@@ -179,7 +179,9 @@ pub async fn ws_proxy(
         .max_message_size(MAX_FRAME_LENGTH)
         .max_frame_size(MAX_FRAME_LENGTH)
         .on_upgrade(move |socket| async move {
-            if let Err(err) = proxy_socket(socket, target, Some(ticket.device_id)).await {
+            if let Err(err) =
+                proxy_socket(socket, target, ProxyKind::Rendezvous, ticket.device_id).await
+            {
                 tracing::warn!(error = %err, "web control rendezvous proxy closed");
             }
         }))
@@ -203,16 +205,43 @@ pub async fn relay_proxy(
         .max_message_size(MAX_FRAME_LENGTH)
         .max_frame_size(MAX_FRAME_LENGTH)
         .on_upgrade(move |socket| async move {
-            if let Err(err) = proxy_socket(socket, target, None).await {
+            if let Err(err) =
+                proxy_socket(socket, target, ProxyKind::Relay, ticket.device_id).await
+            {
                 tracing::warn!(error = %err, "web control relay proxy closed");
             }
         }))
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProxyKind {
+    Rendezvous,
+    Relay,
+}
+
+/// The proxies connect to hbbs/hbbr from loopback, which those servers trust
+/// for console commands and address bookkeeping, so only the messages the
+/// browser legitimately needs are forwarded, and only for the ticket's device.
+fn browser_message_allowed(kind: ProxyKind, first: bool, data: &[u8], device: &str) -> bool {
+    match kind {
+        // The browser only ever asks hbbs to punch a hole to the ticket's device.
+        ProxyKind::Rendezvous => punch_hole_request_id(data).as_deref() == Some(device),
+        // The first relay frame must be a RequestRelay for the ticket's device.
+        // Its leading protobuf key byte (0x92) is not printable ASCII, so hbbr
+        // can never mistake it for a loopback console command.
+        ProxyKind::Relay => {
+            !first
+                || (data.starts_with(&REQUEST_RELAY_KEY)
+                    && request_relay_id(data).as_deref() == Some(device))
+        }
+    }
+}
+
 async fn proxy_socket(
     mut socket: WebSocket,
     target: String,
-    expected_device: Option<String>,
+    kind: ProxyKind,
+    device: String,
 ) -> Result<(), String> {
     let tcp = TcpStream::connect(&target)
         .await
@@ -246,15 +275,15 @@ async fn proxy_socket(
                         if data.len() > MAX_FRAME_LENGTH {
                             break;
                         }
-                        if first_message {
-                            first_message = false;
-                            if let Some(expected) = expected_device.as_deref() {
-                                if punch_hole_request_id(&data).as_deref() != Some(expected) {
-                                    tracing::warn!("web control proxy rejected a mismatched device id");
-                                    break;
-                                }
-                            }
+                        if !browser_message_allowed(kind, first_message, &data, &device) {
+                            tracing::warn!(
+                                device = %device,
+                                kind = ?kind,
+                                "web control proxy rejected an unexpected message"
+                            );
+                            break;
                         }
+                        first_message = false;
                         let mut framed = Vec::with_capacity(data.len() + 4);
                         encode_frame(&data, &mut framed);
                         if writer.write_all(&framed).await.is_err() {
@@ -320,10 +349,21 @@ fn encode_frame(data: &[u8], out: &mut Vec<u8>) {
     out.extend_from_slice(data);
 }
 
+/// Protobuf key of `RendezvousMessage.request_relay` (field 18, length-delimited).
+const REQUEST_RELAY_KEY: [u8; 2] = [0x92, 0x01];
+
 fn punch_hole_request_id(data: &[u8]) -> Option<String> {
-    let request = find_length_delimited_field(data, 8)?;
-    let id = find_length_delimited_field(request, 1)?;
-    String::from_utf8(id.to_vec()).ok()
+    nested_string_field(data, 8, 1)
+}
+
+fn request_relay_id(data: &[u8]) -> Option<String> {
+    nested_string_field(data, 18, 1)
+}
+
+fn nested_string_field(data: &[u8], outer: u64, inner: u64) -> Option<String> {
+    let message = find_length_delimited_field(data, outer)?;
+    let value = find_length_delimited_field(message, inner)?;
+    String::from_utf8(value.to_vec()).ok()
 }
 
 fn find_length_delimited_field(data: &[u8], wanted: u64) -> Option<&[u8]> {
@@ -418,6 +458,32 @@ mod tests {
     fn rejects_message_without_punch_hole_request() {
         let message = length_field(9, b"123456789");
         assert_eq!(punch_hole_request_id(&message), None);
+    }
+
+    #[test]
+    fn rendezvous_proxy_checks_every_message() {
+        let own = length_field(8, &length_field(1, b"111"));
+        let other = length_field(8, &length_field(1, b"222"));
+        let register = length_field(6, &length_field(1, b"111"));
+        assert!(browser_message_allowed(ProxyKind::Rendezvous, true, &own, "111"));
+        assert!(browser_message_allowed(ProxyKind::Rendezvous, false, &own, "111"));
+        assert!(!browser_message_allowed(ProxyKind::Rendezvous, false, &other, "111"));
+        assert!(!browser_message_allowed(ProxyKind::Rendezvous, false, &register, "111"));
+    }
+
+    #[test]
+    fn relay_proxy_checks_the_first_frame() {
+        let mut request = length_field(1, b"111");
+        request.extend(length_field(2, b"uuid"));
+        let own = length_field(18, &request);
+        assert_eq!(&own[..2], &REQUEST_RELAY_KEY);
+        let other = length_field(18, &length_field(1, b"222"));
+        assert!(browser_message_allowed(ProxyKind::Relay, true, &own, "111"));
+        assert!(!browser_message_allowed(ProxyKind::Relay, true, &other, "111"));
+        // A frame that looks like an hbbr console command is refused.
+        assert!(!browser_message_allowed(ProxyKind::Relay, true, b"ls 0", "111"));
+        // Later frames carry encrypted session data and are forwarded as-is.
+        assert!(browser_message_allowed(ProxyKind::Relay, false, b"ls 0", "111"));
     }
 
     #[test]

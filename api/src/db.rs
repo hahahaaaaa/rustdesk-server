@@ -311,6 +311,8 @@ pub async fn init_schema(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     ensure_column(pool, "users", "email_verified", "INTEGER NOT NULL DEFAULT 0").await?;
     ensure_column(pool, "users", "ldap_dn", "TEXT NOT NULL DEFAULT ''").await?;
     ensure_column(pool, "users", "oidc_subject", "TEXT NOT NULL DEFAULT ''").await?;
+    // Access tokens issued before this time are rejected (set when the password changes).
+    ensure_column(pool, "users", "tokens_valid_after", "INTEGER NOT NULL DEFAULT 0").await?;
     execute_sql(pool, "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_oidc_subject ON users(oidc_subject) WHERE oidc_subject <> ''").await?;
     Ok(())
 }

@@ -173,15 +173,19 @@ pub async fn user_from_token(state: &AppState, token: &str) -> Result<AuthUser, 
         return Err(AppError::Unauthorized("访问令牌已失效。".to_owned()));
     }
 
-    let user: Option<(i64, String, i64, i64)> =
-        sqlx::query_as("SELECT id, username, status, is_admin FROM users WHERE id = ?")
-            .bind(claims.uid)
-            .fetch_optional(&state.db)
-            .await?;
-    let (id, username, status, is_admin) =
+    let user: Option<(i64, String, i64, i64, i64)> = sqlx::query_as(
+        "SELECT id, username, status, is_admin, tokens_valid_after FROM users WHERE id = ?",
+    )
+    .bind(claims.uid)
+    .fetch_optional(&state.db)
+    .await?;
+    let (id, username, status, is_admin, tokens_valid_after) =
         user.ok_or_else(|| AppError::Unauthorized("账号不存在。".to_owned()))?;
     if status != 1 {
         return Err(AppError::Unauthorized("账号已被禁用。".to_owned()));
+    }
+    if claims.iat < tokens_valid_after {
+        return Err(AppError::Unauthorized("密码已修改，请重新登录。".to_owned()));
     }
     let permissions = rbac::load_permissions(&state.db, id, is_admin != 0).await?;
 
