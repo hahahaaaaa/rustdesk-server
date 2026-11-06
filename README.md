@@ -46,104 +46,18 @@ cd web-console && npm ci && npm run build              # 控制台静态文件
 
 完整变量（Docker 镜像变量、API 与控制台变量、网页远控参数）见 [docs/environment-variables.md](docs/environment-variables.md)。
 
-## OpenResty / Nginx 反向代理（HTTPS）
+## 反向代理（OpenResty / Nginx）
 
-网页远控和文件传输要求 HTTPS，生产环境建议用 OpenResty（或 Nginx）终止 TLS，再转发到 `21114`。下面的配置可以直接放进 OpenResty 的 `http` 块，按注释替换域名、证书和上游地址即可。原生客户端走 WebSocket（`/ws/id`、`/ws/relay`）的完整示例见 [docs/nginx/rustdesk.conf](docs/nginx/rustdesk.conf)。
+网页远控和文件传输要求 HTTPS。用 OpenResty 终止 TLS 后转发到 `21114`，完整配置见 [docs/nginx/rustdesk.conf](docs/nginx/rustdesk.conf)：已包含控制台与 API 转发、远控和文件传输所需的 WebSocket 升级与长超时、`X-Real-IP` 等请求头。
 
-```nginx
-# ---- 以下三项必须放在 http 块（不能放在 server 块里） ----
-# 登录、单点登录、网页远控会话：每个 IP 每分钟 10 次
-limit_req_zone $binary_remote_addr zone=rd_auth:10m rate=10r/m;
-# 客户端上报接口（不需要登录）：每个 IP 每秒 20 次
-limit_req_zone $binary_remote_addr zone=rd_client:10m rate=20r/s;
-# 访问日志只记路径，不记查询参数，避免把 ticket=、token= 写进日志
-log_format rd_safe '$remote_addr - $remote_user [$time_local] "$request_method $uri $server_protocol" '
-                   '$status $body_bytes_sent "$http_user_agent"';
+在此基础上还要注意：
 
-server {
-    listen 80;
-    server_name rd.example.com;
-    return 301 https://$host$request_uri;
-}
-
-server {
-    listen 443 ssl http2;
-    server_name rd.example.com;
-
-    ssl_certificate     /etc/nginx/certs/fullchain.pem;
-    ssl_certificate_key /etc/nginx/certs/privkey.pem;
-    ssl_protocols TLSv1.2 TLSv1.3;
-
-    access_log /var/log/nginx/rustdesk.access.log rd_safe;
-
-    # 后端不发 HSTS，由这里统一加。CSP / X-Frame-Options 等由后端设置，这里不要重复配置。
-    add_header Strict-Transport-Security "max-age=31536000" always;
-
-    # 默认请求体上限，录像上传在下面单独放大
-    client_max_body_size 2m;
-
-    # 所有转发都带上这些头。X-Real-IP 必须用 $remote_addr 覆盖客户端传来的值：
-    # 后端的登录限流和审计 IP 都依赖它，不覆盖的话可以伪造 IP 无限次猜密码。
-    proxy_http_version 1.1;
-    proxy_set_header Host $host;
-    proxy_set_header X-Real-IP $remote_addr;
-    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-    proxy_set_header X-Forwarded-Proto $scheme;
-    proxy_set_header X-Forwarded-Host $host;
-
-    # 控制台和管理 API
-    location / {
-        proxy_pass http://127.0.0.1:21114;
-    }
-
-    # 网页远控、文件传输的 WebSocket。默认 60 秒超时会让画面静止时的连接断开。
-    location ~ ^/api/web-control/(ws|relay)$ {
-        proxy_pass http://127.0.0.1:21114;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "upgrade";
-        proxy_read_timeout 3600s;
-        proxy_send_timeout 3600s;
-        proxy_buffering off;
-    }
-
-    # 登录、单点登录、创建网页远控会话：限流
-    location = /api/login {
-        limit_req zone=rd_auth burst=5 nodelay;
-        proxy_pass http://127.0.0.1:21114;
-    }
-    location ^~ /api/oidc/ {
-        limit_req zone=rd_auth burst=10 nodelay;
-        proxy_pass http://127.0.0.1:21114;
-    }
-    location = /api/web-control/session {
-        limit_req zone=rd_auth burst=10 nodelay;
-        proxy_pass http://127.0.0.1:21114;
-    }
-
-    # 会话录像上传：后端单块上限 64MB
-    location = /api/record {
-        client_max_body_size 64m;
-        limit_req zone=rd_client burst=40;
-        proxy_pass http://127.0.0.1:21114;
-        proxy_request_buffering off;
-    }
-
-    # 其他不需要登录的客户端接口：限流
-    location ~ ^/api/(audit/|heartbeat$|sysinfo$) {
-        limit_req zone=rd_client burst=40;
-        proxy_pass http://127.0.0.1:21114;
-    }
-}
-```
-
-配合这份配置还需要做的事：
-
-- **不要让 `21114` 直接暴露到公网**，只让 OpenResty 访问它。不然可以绕过代理，伪造 `X-Real-IP` 绕开登录限流。Docker 部署时把 `docker-compose.yml` 的端口映射改成 `"127.0.0.1:21114:21114"`；不用 Docker 时设置 `API_BIND=127.0.0.1`，或者用防火墙、安全组挡住这个端口。
-- 改完端口映射后，客户端的 API 服务器要填 `https://rd.example.com`，不能再用 `http://IP:21114`。
-- **单点登录的回调地址**：后端默认根据 `Host`、`X-Forwarded-Proto`、`X-Forwarded-Host` 推出回调地址，上面的配置已经带上这些头。更稳妥的做法是在控制台「集成 → OIDC」里直接填写回调地址。
-- **只需改环境变量就能加强的两项**：`API_TOKEN_TTL_HOURS` 改为 8 到 24（默认 168 小时）；`API_CORS_ORIGINS` 改为 `https://rd.example.com`（默认 `*`）。
-- 如果你在 OpenResty 里也配置了 `Content-Security-Policy`，浏览器会同时执行两份策略。这时 `script-src` 必须包含 `'unsafe-eval' 'wasm-unsafe-eval'`，否则网页远控无法运行。最简单的做法是不在代理上配置 CSP。
-- `21115`～`21117`（ID 注册和中继）是 TCP/UDP 端口，不经过 HTTP 代理，要直接开放给客户端。
+- **`21114` 只对代理开放**，不要直接暴露公网。Docker 部署把端口映射改成 `"127.0.0.1:21114:21114"`，不用 Docker 时设 `API_BIND=127.0.0.1`。后端登录限流依赖 `X-Real-IP`，能直连就能伪造它绕过限流。
+- 客户端 API 服务器填 `https://你的域名`；单点登录回调地址建议在控制台「集成 → OIDC」里直接填写。
+- 建议再补上 HSTS（`add_header Strict-Transport-Security "max-age=31536000" always;`）和登录限流（`limit_req_zone`，用在 `/api/login`、`/api/oidc/`、`/api/web-control/session` 上）。
+- 会话录像上传接口 `/api/record` 单块最大 64MB，OpenResty 默认 1MB 会返回 413，需要 `client_max_body_size 64m`。
+- `API_TOKEN_TTL_HOURS` 建议 8～24（默认 168）；`API_CORS_ORIGINS` 改成自己的域名。
+- `21115`～`21117` 是 TCP/UDP 端口，不经过 HTTP 代理，需直接开放给客户端。
 
 ## 与上游的差异
 
